@@ -120,6 +120,12 @@
   <label class="slider" for="sens">Sensitivity <output id="sensOut">1.0×</output>
     <input id="sens" type="range" min="0.3" max="3" step="0.1" value="1">
   </label>
+  <label class="slider" for="size">Size <output id="sizeOut">100%</output>
+    <input id="size" type="range" min="0.4" max="1.6" step="0.05" value="1">
+  </label>
+  <label class="slider" for="speed">Speed <output id="speedOut">1.0×</output>
+    <input id="speed" type="range" min="0" max="3" step="0.1" value="1">
+  </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <div class="status" aria-live="polite">
     <span id="statusText">Demo signal</span>
@@ -265,6 +271,10 @@
   gl.blendFunc(gl.ONE, gl.ONE); // additive glow
   gl.clearColor(0.027, 0.043, 0.078, 1);
 
+  const sizeInput = document.getElementById('size');
+  const speedInput = document.getElementById('speed');
+  const sizeOut = document.getElementById('sizeOut');
+  const speedOut = document.getElementById('speedOut');
   let dpr = 1;
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -272,13 +282,15 @@
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
     gl.viewport(0, 0, canvas.width, canvas.height);
-    const s = 0.6;
+    const s = 0.6 * Number(sizeInput.value);
     const fit = w > h ? [s * h / w, s] : [s, s * w / h];
     gl.uniform2f(U.uFit, fit[0], fit[1]);
     gl.uniform1f(U.uDpr, dpr);
   }
   window.addEventListener('resize', resize);
   resize();
+  sizeInput.addEventListener('input', () => { sizeOut.textContent = Math.round(sizeInput.value * 100) + '%'; resize(); });
+  speedInput.addEventListener('input', () => { speedOut.textContent = Number(speedInput.value).toFixed(1) + '×'; });
 
   // ---- Audio ----
   const sens = document.getElementById('sens');
@@ -400,17 +412,19 @@
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const start = performance.now();
-  let rot = 0, last = start;
+  let rot = 0, last = start, motionTime = 0;
 
   function frame(now) {
     const t = (now - start) / 1000;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     readAudio(t);
-    rot += dt * (reduceMotion ? 0.04 : 0.12 + live.level * 0.25);
+    const speed = Number(speedInput.value) * (reduceMotion ? 0.3 : 1);
+    motionTime += dt * speed;
+    rot += dt * speed * (0.12 + live.level * 0.25);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniform1f(U.uTime, reduceMotion ? t * 0.3 : t);
+    gl.uniform1f(U.uTime, motionTime);
     gl.uniform1f(U.uLevel, live.level);
     gl.uniform1f(U.uBass, live.bass);
     gl.uniform1f(U.uMid, live.mid);
