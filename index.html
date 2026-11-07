@@ -8,7 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600&display=swap">
 <style>
-  /* Layout: full-bleed WebGL stage, one floating control bar pinned to the bottom edge. Single dark look by design. */
+  /* Layout: full-bleed WebGL stage, one floating control bar pinned to the bottom edge.
+     The page keeps its own theme switch (Auto / Light / Dark) on body[data-orb], separate from the host's data-theme. */
   :root {
     color-scheme: dark;
     --night: #070B14;
@@ -16,10 +17,22 @@
     --muted: #8D98AE;
     --line: rgba(160, 180, 220, 0.18);
     --glass: rgba(14, 20, 34, 0.72);
+    --chip-on: rgba(255, 255, 255, 0.12);
     --warm: #FF6A3D;
     --cool: #5B9BFF;
     --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-data: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  body[data-orb="light"] {
+    color-scheme: light;
+    --night: #F3F5F9;
+    --ink: #172033;
+    --muted: #5D6880;
+    --line: rgba(40, 60, 100, 0.16);
+    --glass: rgba(255, 255, 255, 0.78);
+    --chip-on: rgba(23, 32, 51, 0.08);
+    --warm: #E2492C;
+    --cool: #2F6BE0;
   }
   html, body { height: 100%; }
   body {
@@ -35,7 +48,7 @@
     width: 100%;
     height: 100%;
     display: block;
-    background: radial-gradient(ellipse at 50% 55%, #121B30 0%, var(--night) 70%);
+    background: var(--night);
     touch-action: none;
   }
   .bar {
@@ -69,7 +82,20 @@
     font: 600 14px var(--font-ui);
     cursor: pointer;
   }
-  .mic[aria-pressed="true"] { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+  .mic[aria-pressed="true"] { background: var(--chip-on); color: var(--ink); }
+  .theme { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 11px; }
+  .theme button {
+    min-height: 34px;
+    padding: 0 11px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font: 600 12px var(--font-ui);
+    cursor: pointer;
+  }
+  .theme button[aria-pressed="true"] { background: var(--chip-on); color: var(--ink); }
+  .theme button:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
   .mic:focus-visible, input:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
   .pulse { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.9; }
   .slider {
@@ -129,6 +155,11 @@
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
+  <div class="theme" role="group" aria-label="Theme">
+    <button type="button" data-theme-choice="auto" aria-pressed="true">Auto</button>
+    <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+    <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+  </div>
   <div class="status" aria-live="polite">
     <span id="statusText">Demo signal</span>
     <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
@@ -157,7 +188,7 @@
   const vs = `#version 300 es
   precision highp float;
   layout(location=0) in vec2 aUV;
-  uniform float uTime, uLevel, uBass, uMid, uHigh, uRot, uPass, uDpr;
+  uniform float uTime, uLevel, uBass, uMid, uHigh, uRot, uPass, uDpr, uLight;
   uniform vec2 uFit;
   out vec3 vColor;
   out float vAlpha;
@@ -221,14 +252,16 @@
     float edge = pow(rim, 2.6);
 
     // Screen-fixed gradient: warm on top, cool at the bottom.
-    vec3 warm = vec3(1.0, 0.36, 0.20);
-    vec3 cool = vec3(0.30, 0.56, 1.0);
+    vec3 warm = mix(vec3(1.0, 0.36, 0.20), vec3(0.89, 0.26, 0.14), uLight);
+    vec3 cool = mix(vec3(0.30, 0.56, 1.0), vec3(0.16, 0.38, 0.88), uLight);
     vec3 col = mix(cool, warm, smoothstep(-0.85, 0.85, p.y));
-    col = mix(col, vec3(1.0, 0.94, 0.9), pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
+    // Dark: the rim burns toward white. Light: it deepens instead, since glow can't brighten a white page.
+    vec3 hot = mix(vec3(1.0, 0.94, 0.9), col * 0.62, uLight);
+    col = mix(col, hot, pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
 
     float a = 0.12 + 0.88 * edge + 0.2 * uLevel * edge;
     vColor = col;
-    vAlpha = uPass < 0.5 ? a : a * 0.07;
+    vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
     gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
   }`;
 
@@ -241,7 +274,8 @@
   void main(){
     float d = length(gl_PointCoord - 0.5) * 2.0;
     float a = uPass < 0.5 ? smoothstep(1.0, 0.55, d) : pow(max(0.0, 1.0 - d), 2.0);
-    outColor = vec4(vColor * vAlpha * a, 1.0);
+    float k = min(1.0, vAlpha * a);
+    outColor = vec4(vColor * k, k); // premultiplied: additive in dark, "over" in light
   }`;
 
   function compile(type, src) {
@@ -266,12 +300,32 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   gl.useProgram(prog);
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.ONE, gl.ONE); // additive glow
-  gl.clearColor(0.027, 0.043, 0.078, 1);
+  // ---- Theme ----
+  const themeButtons = document.querySelectorAll('[data-theme-choice]');
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  let themeChoice = 'auto';
+  function resolvedTheme() {
+    if (themeChoice !== 'auto') return themeChoice;
+    const host = document.documentElement.getAttribute('data-theme');
+    if (host === 'light' || host === 'dark') return host;
+    return systemDark.matches ? 'dark' : 'light';
+  }
+  function applyTheme() {
+    const light = resolvedTheme() === 'light';
+    document.body.setAttribute('data-orb', light ? 'light' : 'dark');
+    themeButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeChoice === themeChoice)));
+    gl.useProgram(prog);
+    gl.uniform1f(U.uLight, light ? 1 : 0);
+    if (light) { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.clearColor(0.953, 0.961, 0.976, 1); }
+    else { gl.blendFunc(gl.ONE, gl.ONE); gl.clearColor(0.027, 0.043, 0.078, 1); }
+  }
+  systemDark.addEventListener('change', applyTheme);
+  new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  applyTheme();
 
   const sizeInput = document.getElementById('size');
   const speedInput = document.getElementById('speed');
@@ -304,6 +358,7 @@
   function currentParams() {
     const q = new URLSearchParams();
     for (const k in controls) q.set(k, Number(controls[k].value).toString());
+    q.set('theme', themeChoice);
     return q;
   }
   function shareUrl() { return location.origin + location.pathname + '?' + currentParams().toString(); }
@@ -319,12 +374,16 @@
         el.value = String(Math.min(Number(el.max), Math.max(Number(el.min), v)));
       }
     }
+    const th = q.get('theme') || saved.theme;
+    if (th === 'auto' || th === 'light' || th === 'dark') themeChoice = th;
+    applyTheme();
     showValues();
     resize();
   })();
   function saveSettings() {
     const data = {};
     for (const k in controls) data[k] = Number(controls[k].value);
+    data.theme = themeChoice;
     try { localStorage.setItem(KEY, JSON.stringify(data)); } catch {}
     try { history.replaceState(null, '', location.pathname + '?' + currentParams().toString() + location.hash); } catch {}
   }
@@ -332,6 +391,11 @@
     controls[k].addEventListener('input', () => { showValues(); if (k === 'size') resize(); });
     controls[k].addEventListener('change', saveSettings);
   }
+  themeButtons.forEach(b => b.addEventListener('click', () => {
+    themeChoice = b.dataset.themeChoice;
+    applyTheme();
+    saveSettings();
+  }));
   document.getElementById('copyLink').addEventListener('click', async () => {
     saveSettings();
     const url = shareUrl();
