@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Voice Orb</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600&display=swap">
+<style>
+  /* Layout: full-bleed WebGL stage, one floating control bar pinned to the bottom edge. Single dark look by design. */
+  :root {
+    color-scheme: dark;
+    --night: #070B14;
+    --ink: #E7ECF5;
+    --muted: #8D98AE;
+    --line: rgba(160, 180, 220, 0.18);
+    --glass: rgba(14, 20, 34, 0.72);
+    --warm: #FF6A3D;
+    --cool: #5B9BFF;
+    --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-data: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--night);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    overflow: hidden;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: radial-gradient(ellipse at 50% 55%, #121B30 0%, var(--night) 70%);
+    touch-action: none;
+  }
+  .bar {
+    position: fixed;
+    left: 50%;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    width: min(560px, calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-sizing: border-box;
+  }
+  .mic {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 11px;
+    background: linear-gradient(90deg, var(--warm), var(--cool));
+    color: #fff;
+    font: 600 14px var(--font-ui);
+    cursor: pointer;
+  }
+  .mic[aria-pressed="true"] { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+  .mic:focus-visible, input:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.9; }
+  .slider {
+    flex: 1 1 160px;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 2px 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .slider input { grid-column: 1 / -1; width: 100%; accent-color: var(--warm); margin: 0; }
+  .slider output { justify-self: end; font: 12px var(--font-data); font-variant-numeric: tabular-nums; }
+  .file {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    font: 600 13px var(--font-ui);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .file:focus-within { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .status {
+    flex-basis: 100%;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font: 11px/1.4 var(--font-data);
+    color: var(--muted);
+    letter-spacing: 0.02em;
+  }
+  .meter { display: inline-flex; gap: 3px; align-items: end; height: 12px; }
+  .meter i { width: 3px; background: var(--muted); border-radius: 1px; height: 2px; transition: height 60ms linear; }
+  @media (prefers-reduced-motion: reduce) { .meter i { transition: none; } }
+</style>
+</head>
+<body>
+
+<canvas id="stage" aria-label="Audio-reactive orb"></canvas>
+
+<div class="bar" role="group" aria-label="Orb controls">
+  <button class="mic" id="micBtn" type="button" aria-pressed="false"><span class="pulse"></span><span id="micLabel">Use microphone</span></button>
+  <label class="slider" for="sens">Sensitivity <output id="sensOut">1.0×</output>
+    <input id="sens" type="range" min="0.3" max="3" step="0.1" value="1">
+  </label>
+  <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
+  <div class="status" aria-live="polite">
+    <span id="statusText">Demo signal</span>
+    <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('stage');
+  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+  const statusText = document.getElementById('statusText');
+  if (!gl) { statusText.textContent = 'WebGL2 is not available in this browser.'; return; }
+
+  // Geometry: small dots laid along meridians, so the sphere reads as vertical strands of tiny orbs.
+  const MERIDIANS = 140;
+  const PER_LINE = 110; // ~15k dots, same budget as Murmuration Lab
+  const COUNT = MERIDIANS * PER_LINE;
+  const uv = new Float32Array(COUNT * 2);
+  for (let m = 0, i = 0; m < MERIDIANS; m++) {
+    for (let k = 0; k < PER_LINE; k++, i += 2) {
+      uv[i] = m / MERIDIANS;
+      uv[i + 1] = (k + 0.5) / PER_LINE;
+    }
+  }
+
+  const vs = `#version 300 es
+  precision highp float;
+  layout(location=0) in vec2 aUV;
+  uniform float uTime, uLevel, uBass, uMid, uHigh, uRot, uPass, uDpr;
+  uniform vec2 uFit;
+  out vec3 vColor;
+  out float vAlpha;
+
+  // 3D simplex noise (Ashima Arts / Stefan Gustavson, MIT).
+  vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+  vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+  vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+  vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+  float snoise(vec3 v){
+    const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+    vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+    vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+    vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy;
+    i=mod289(i);
+    vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+    float n_=0.142857142857; vec3 ns=n_*D.wyz-D.xzx;
+    vec4 j=p-49.0*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+    vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+    vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+    vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+    vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+    vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+    vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+    p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+    vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); m=m*m;
+    return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+  }
+
+  void main(){
+    float theta = aUV.x * 6.2831853;
+    float phi = aUV.y * 3.1415926;
+    vec3 dir = vec3(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta));
+
+    float topW = smoothstep(-0.2, 1.0, dir.y);
+    float botW = smoothstep(0.2, -1.0, dir.y);
+    float t = uTime;
+
+    // Slow base wobble plus finer ripples; audio bands scale them by region.
+    float n1 = snoise(dir * 1.5 + vec3(0.0, t * 0.22, t * 0.1));
+    float n2 = snoise(dir * 4.2 + vec3(t * 0.5, 0.0, -t * 0.35));
+    float n3 = snoise(dir * 9.0 + vec3(0.0, -t * 0.9, t * 0.6));
+    float amp = 0.035 + 0.16 * uLevel + 0.22 * uBass * botW + 0.10 * uMid;
+    float fine = 0.012 + 0.10 * uHigh * (0.4 + topW);
+    float r = 1.0 + amp * (0.65 * n1 + 0.35 * n2) + fine * n3 + 0.06 * uLevel;
+    vec3 p = dir * r;
+
+    // Spin around Y, slight tilt toward the camera.
+    float c = cos(uRot), s = sin(uRot);
+    p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+    vec3 nrm = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
+    float ct = cos(0.28), st = sin(0.28);
+    p = vec3(p.x, ct * p.y - st * p.z, st * p.y + ct * p.z);
+    nrm = vec3(nrm.x, ct * nrm.y - st * nrm.z, st * nrm.y + ct * nrm.z);
+
+    float d = 3.6;
+    gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
+
+    // Fresnel: bright at the silhouette, almost clear through the middle.
+    float rim = 1.0 - abs(nrm.z);
+    float edge = pow(rim, 2.6);
+
+    // Screen-fixed gradient: warm on top, cool at the bottom.
+    vec3 warm = vec3(1.0, 0.36, 0.20);
+    vec3 cool = vec3(0.30, 0.56, 1.0);
+    vec3 col = mix(cool, warm, smoothstep(-0.85, 0.85, p.y));
+    col = mix(col, vec3(1.0, 0.94, 0.9), pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
+
+    float a = 0.12 + 0.88 * edge + 0.2 * uLevel * edge;
+    vColor = col;
+    vAlpha = uPass < 0.5 ? a : a * 0.07;
+    gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
+  }`;
+
+  const fs = `#version 300 es
+  precision highp float;
+  uniform float uPass;
+  in vec3 vColor;
+  in float vAlpha;
+  out vec4 outColor;
+  void main(){
+    float d = length(gl_PointCoord - 0.5) * 2.0;
+    float a = uPass < 0.5 ? smoothstep(1.0, 0.55, d) : pow(max(0.0, 1.0 - d), 2.0);
+    outColor = vec4(vColor * vAlpha * a, 1.0);
+  }`;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { statusText.textContent = 'Shader error: ' + gl.getProgramInfoLog(prog); return; }
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+  gl.useProgram(prog);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE); // additive glow
+  gl.clearColor(0.027, 0.043, 0.078, 1);
+
+  let dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    const s = 0.6;
+    const fit = w > h ? [s * h / w, s] : [s, s * w / h];
+    gl.uniform2f(U.uFit, fit[0], fit[1]);
+    gl.uniform1f(U.uDpr, dpr);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- Audio ----
+  const sens = document.getElementById('sens');
+  const sensOut = document.getElementById('sensOut');
+  const micBtn = document.getElementById('micBtn');
+  const micLabel = document.getElementById('micLabel');
+  const bars = document.querySelectorAll('.meter i');
+  sens.addEventListener('input', () => { sensOut.textContent = Number(sens.value).toFixed(1) + '×'; });
+
+  // Both sources feed one analyser: your voice (mic) and the AI voice played by the page.
+  let ctx = null, analyser = null, mix = null, stream = null, micSrc = null, freq = null, wave = null;
+  const player = new Audio();
+  let playerSrc = null;
+  const live = { level: 0, bass: 0, mid: 0, high: 0 };
+
+  function ensureAudio() {
+    if (ctx) return;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    mix = ctx.createGain();
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.6;
+    mix.connect(analyser);
+    freq = new Uint8Array(analyser.frequencyBinCount);
+    wave = new Uint8Array(analyser.fftSize);
+  }
+  const listening = () => !!stream || (!!playerSrc && !player.paused);
+  function refreshStatus() {
+    const parts = [];
+    if (stream) parts.push('Listening to you');
+    if (playerSrc && !player.paused) parts.push('AI voice playing');
+    statusText.textContent = parts.length ? parts.join(' + ') : 'Demo signal';
+  }
+
+  async function startMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      statusText.textContent = 'Microphone needs HTTPS. Showing demo signal.';
+      return;
+    }
+    try {
+      ensureAudio();
+      await ctx.resume();
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      micSrc = ctx.createMediaStreamSource(stream);
+      micSrc.connect(mix); // not sent to the speakers, so no feedback
+      micBtn.setAttribute('aria-pressed', 'true');
+      micLabel.textContent = 'Stop microphone';
+      refreshStatus();
+    } catch (err) {
+      stream = null;
+      statusText.textContent = err && err.name === 'NotAllowedError'
+        ? 'Microphone blocked here. Showing demo signal.'
+        : 'Could not open the microphone. Showing demo signal.';
+    }
+  }
+  function stopMic() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (micSrc) micSrc.disconnect();
+    stream = null; micSrc = null;
+    micBtn.setAttribute('aria-pressed', 'false');
+    micLabel.textContent = 'Use microphone';
+    refreshStatus();
+  }
+  micBtn.addEventListener('click', () => (stream ? stopMic() : startMic()));
+
+  document.getElementById('voiceFile').addEventListener('change', async e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    ensureAudio();
+    await ctx.resume();
+    if (player.src) URL.revokeObjectURL(player.src);
+    player.src = URL.createObjectURL(file);
+    if (!playerSrc) {
+      playerSrc = ctx.createMediaElementSource(player);
+      playerSrc.connect(mix);
+      playerSrc.connect(ctx.destination); // you hear it, the orb sees it
+    }
+    try { await player.play(); } catch { statusText.textContent = 'Tap again to play the audio.'; }
+    refreshStatus();
+  });
+  player.addEventListener('ended', refreshStatus);
+  player.addEventListener('pause', refreshStatus);
+
+  function bandAvg(lo, hi) {
+    const nyq = ctx.sampleRate / 2, n = freq.length;
+    const a = Math.max(1, Math.floor(lo / nyq * n)), b = Math.min(n - 1, Math.ceil(hi / nyq * n));
+    let sum = 0;
+    for (let i = a; i <= b; i++) sum += freq[i];
+    return sum / ((b - a + 1) * 255);
+  }
+
+  function readAudio(t) {
+    const k = Number(sens.value);
+    let level, bass, mid, high;
+    if (listening()) {
+      analyser.getByteFrequencyData(freq);
+      analyser.getByteTimeDomainData(wave);
+      let rms = 0;
+      for (let i = 0; i < wave.length; i++) { const v = (wave[i] - 128) / 128; rms += v * v; }
+      level = Math.sqrt(rms / wave.length) * 4;
+      bass = bandAvg(40, 250) * 1.6;
+      mid = bandAvg(250, 2000) * 1.8;
+      high = bandAvg(2000, 8000) * 2.6;
+    } else {
+      // Speech-like demo: syllable bursts inside slower phrases.
+      const phrase = Math.max(0, Math.sin(t * 0.55) * 0.8 + 0.35);
+      const syl = Math.pow(Math.max(0, Math.sin(t * 7.3) * Math.sin(t * 2.9 + 1.2)), 1.5);
+      level = phrase * (0.25 + 0.75 * syl) * 0.75;
+      bass = level * (0.6 + 0.4 * Math.sin(t * 1.3));
+      mid = level * 0.8;
+      high = level * (0.5 + 0.5 * Math.sin(t * 5.1 + 0.4));
+    }
+    const target = { level, bass, mid, high };
+    for (const key in live) {
+      const v = Math.min(1.2, target[key] * k);
+      live[key] += (v - live[key]) * (v > live[key] ? 0.45 : 0.07); // fast attack, slow release
+    }
+  }
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const start = performance.now();
+  let rot = 0, last = start;
+
+  function frame(now) {
+    const t = (now - start) / 1000;
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    readAudio(t);
+    rot += dt * (reduceMotion ? 0.04 : 0.12 + live.level * 0.25);
+
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform1f(U.uTime, reduceMotion ? t * 0.3 : t);
+    gl.uniform1f(U.uLevel, live.level);
+    gl.uniform1f(U.uBass, live.bass);
+    gl.uniform1f(U.uMid, live.mid);
+    gl.uniform1f(U.uHigh, live.high);
+    gl.uniform1f(U.uRot, rot);
+    gl.uniform1f(U.uPass, 1); gl.drawArrays(gl.POINTS, 0, COUNT); // halo
+    gl.uniform1f(U.uPass, 0); gl.drawArrays(gl.POINTS, 0, COUNT); // crisp lines
+
+    const vals = [live.bass, live.mid, live.high, live.level];
+    bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body>
+</html>
