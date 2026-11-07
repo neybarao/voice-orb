@@ -95,6 +95,7 @@
     color: var(--ink);
     cursor: pointer;
   }
+  button.file { background: transparent; }
   .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
   .file:focus-within { outline: 2px solid var(--cool); outline-offset: 2px; }
   .status {
@@ -127,6 +128,7 @@
     <input id="speed" type="range" min="0" max="3" step="0.1" value="1">
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
+  <button class="file" id="copyLink" type="button">Copy link</button>
   <div class="status" aria-live="polite">
     <span id="statusText">Demo signal</span>
     <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
@@ -289,8 +291,53 @@
   }
   window.addEventListener('resize', resize);
   resize();
-  sizeInput.addEventListener('input', () => { sizeOut.textContent = Math.round(sizeInput.value * 100) + '%'; resize(); });
-  speedInput.addEventListener('input', () => { speedOut.textContent = Number(speedInput.value).toFixed(1) + '×'; });
+  // ---- Settings: read from the link (?sens=&size=&speed=), else from this browser, and keep both in sync ----
+  const sensInput = document.getElementById('sens');
+  const sensOutEl = document.getElementById('sensOut');
+  const controls = { sens: sensInput, size: sizeInput, speed: speedInput };
+  const KEY = 'voice-orb-settings';
+  function showValues() {
+    sensOutEl.textContent = Number(sensInput.value).toFixed(1) + '×';
+    sizeOut.textContent = Math.round(sizeInput.value * 100) + '%';
+    speedOut.textContent = Number(speedInput.value).toFixed(1) + '×';
+  }
+  function currentParams() {
+    const q = new URLSearchParams();
+    for (const k in controls) q.set(k, Number(controls[k].value).toString());
+    return q;
+  }
+  function shareUrl() { return location.origin + location.pathname + '?' + currentParams().toString(); }
+  (function loadSettings() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch {}
+    const q = new URLSearchParams(location.search);
+    for (const k in controls) {
+      const raw = q.has(k) ? q.get(k) : saved[k];
+      const v = Number(raw);
+      if (raw != null && Number.isFinite(v)) {
+        const el = controls[k];
+        el.value = String(Math.min(Number(el.max), Math.max(Number(el.min), v)));
+      }
+    }
+    showValues();
+    resize();
+  })();
+  function saveSettings() {
+    const data = {};
+    for (const k in controls) data[k] = Number(controls[k].value);
+    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch {}
+    try { history.replaceState(null, '', location.pathname + '?' + currentParams().toString() + location.hash); } catch {}
+  }
+  for (const k in controls) {
+    controls[k].addEventListener('input', () => { showValues(); if (k === 'size') resize(); });
+    controls[k].addEventListener('change', saveSettings);
+  }
+  document.getElementById('copyLink').addEventListener('click', async () => {
+    saveSettings();
+    const url = shareUrl();
+    try { await navigator.clipboard.writeText(url); statusText.textContent = 'Link copied with these settings'; }
+    catch { statusText.textContent = url; }
+  });
 
   // ---- Audio ----
   const sens = document.getElementById('sens');
@@ -298,7 +345,6 @@
   const micBtn = document.getElementById('micBtn');
   const micLabel = document.getElementById('micLabel');
   const bars = document.querySelectorAll('.meter i');
-  sens.addEventListener('input', () => { sensOut.textContent = Number(sens.value).toFixed(1) + '×'; });
 
   // Both sources feed one analyser: your voice (mic) and the AI voice played by the page.
   let ctx = null, analyser = null, mix = null, stream = null, micSrc = null, freq = null, wave = null;
