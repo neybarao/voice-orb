@@ -325,7 +325,7 @@
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
-  out float vW, vK, vVis, vZ, vGapA, vGapB;
+  out float vW, vK, vVis, vZ, vGapA, vGapB, vGapT;
   ${NOISE_GLSL}
   const float PI = 3.1415926, TAU = 6.2831853;
   const float RM = 0.74, RT = 0.22; // glass torus: major / minor radius
@@ -400,6 +400,9 @@
     float gb = smoothstep(-0.6, 0.15, snoise(cp + vec3(5.3, 1.7, uFlow * 0.25)));
     vGapA = mix(1.0, ga, uBreak);
     vGapB = mix(1.0, gb, uBreak);
+    // Thinking tubes: same idea on their bright rims; cos(around-tube) makes inner and outer rims break differently.
+    float gt = smoothstep(-0.25, 0.35, snoise(cp * 1.4 + vec3(cos(q.y * PI) * 1.2, 2.1, uFlow * 0.25)));
+    vGapT = mix(1.0, gt, uBreak);
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
   }`;
@@ -409,7 +412,7 @@
   uniform float uLight, uLevel, uMorph;
   in vec3 vN;
   in vec2 vS;
-  in float vW, vK, vVis, vZ, vGapA, vGapB;
+  in float vW, vK, vVis, vZ, vGapA, vGapB, vGapT;
   out vec4 outColor;
   vec3 grad(vec2 s){
     // Left half blue (cyan up top), right half red, violet only in the seam, pink along the bottom.
@@ -441,12 +444,12 @@
       float hem = smoothstep(0.72, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e));
       float gap = vW > 0.0 ? vGapA : vGapB;
       float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * gap * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light
-      float tube = 0.05 + 0.3 * pow(f, 1.8) + 1.1 * pow(f, 8.0);                            // thinking tubes
+      float tube = 0.05 + 0.3 * pow(f, 1.8) * mix(0.6, 1.0, vGapT) + 1.1 * pow(f, 8.0) * vGapT;                            // thinking tubes
       a = mix(silk, tube, uMorph) * vVis;
       // Lit edges glow almost white; where two of them cross, the sum burns to white.
       float edgeLine = smoothstep(0.82, 0.97, e) * (1.0 - smoothstep(0.97, 1.0, e));
       float silkWh = edgeLine * gap * (vW > 0.0 ? 1.0 : 0.3) * (0.9 + 3.0 * pow(f, 2.0)); // strongest where the band turns edge-on
-      float tubeWh = 1.2 * pow(f, 10.0);
+      float tubeWh = 1.2 * pow(f, 10.0) * vGapT;
       wh = mix(silkWh, tubeWh, uMorph) * vVis;
       float depth = mix(0.3, 1.0, smoothstep(-0.7, 0.3, vZ)); // parts behind read dimmer through the glass
       a *= depth;
