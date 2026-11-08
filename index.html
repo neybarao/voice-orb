@@ -321,11 +321,11 @@
   const gvs = `#version 300 es
   precision highp float;
   layout(location=0) in vec3 aP; // x: along (0..1), y: across, z: kind (-1 shell, 0..2 ribbon)
-  uniform float uTime, uLevel, uBass, uHigh, uMorph, uSpin, uFlow;
+  uniform float uTime, uLevel, uBass, uHigh, uMorph, uSpin, uFlow, uBreak;
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
-  out float vW, vK, vVis, vZ;
+  out float vW, vK, vVis, vZ, vGapA, vGapB;
   ${NOISE_GLSL}
   const float PI = 3.1415926, TAU = 6.2831853;
   const float RM = 0.74, RT = 0.22; // glass torus: major / minor radius
@@ -393,6 +393,13 @@
     float vis = k > 1.5 ? uMorph : 1.0;
     vVis = vis * (1.0 - 0.9 * sin(PI * uMorph));
     vZ = p.z;
+    // Broken strokes: each edge of a band fades out along stretches of its length, and the gaps drift.
+    float sa = q.x * TAU;
+    vec3 cp = vec3(cos(sa), sin(sa), k * 3.7) * 0.8;
+    float ga = smoothstep(-0.6, 0.15, snoise(cp + vec3(0.0, 0.0, uFlow * 0.25)));
+    float gb = smoothstep(-0.6, 0.15, snoise(cp + vec3(5.3, 1.7, uFlow * 0.25)));
+    vGapA = mix(1.0, ga, uBreak);
+    vGapB = mix(1.0, gb, uBreak);
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
   }`;
@@ -402,7 +409,7 @@
   uniform float uLight, uLevel, uMorph;
   in vec3 vN;
   in vec2 vS;
-  in float vW, vK, vVis, vZ;
+  in float vW, vK, vVis, vZ, vGapA, vGapB;
   out vec4 outColor;
   vec3 grad(vec2 s){
     // Left half blue (cyan up top), right half red, violet only in the seam, pink along the bottom.
@@ -432,12 +439,13 @@
       float e = abs(vW);
       float band = 1.0 - smoothstep(0.7, 1.0, e);
       float hem = smoothstep(0.72, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e));
-      float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light
+      float gap = vW > 0.0 ? vGapA : vGapB;
+      float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * gap * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light
       float tube = 0.05 + 0.3 * pow(f, 1.8) + 1.1 * pow(f, 8.0);                            // thinking tubes
       a = mix(silk, tube, uMorph) * vVis;
       // Lit edges glow almost white; where two of them cross, the sum burns to white.
       float edgeLine = smoothstep(0.82, 0.97, e) * (1.0 - smoothstep(0.97, 1.0, e));
-      float silkWh = edgeLine * (vW > 0.0 ? 1.0 : 0.3) * (0.9 + 3.0 * pow(f, 2.0)); // strongest where the band turns edge-on
+      float silkWh = edgeLine * gap * (vW > 0.0 ? 1.0 : 0.3) * (0.9 + 3.0 * pow(f, 2.0)); // strongest where the band turns edge-on
       float tubeWh = 1.2 * pow(f, 10.0);
       wh = mix(silkWh, tubeWh, uMorph) * vVis;
       float depth = mix(0.3, 1.0, smoothstep(-0.7, 0.3, vZ)); // parts behind read dimmer through the glass
@@ -486,7 +494,11 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight','uBreak'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
+  const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
+  gl.useProgram(gprog);
+  gl.uniform1f(GU.uBreak, BROKEN_EDGES ? 1 : 0);
 
   // ---- Bloom (dark theme, glass only): scene -> 1/4 res -> two blur rounds -> composite ----
   const postVs = `#version 300 es
