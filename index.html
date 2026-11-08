@@ -84,6 +84,7 @@
   }
   .mic[aria-pressed="true"] { background: var(--chip-on); color: var(--ink); }
   .theme { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 11px; }
+  .theme[hidden] { display: none; }
   .theme button {
     min-height: 34px;
     padding: 0 11px;
@@ -155,6 +156,14 @@
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
+  <div class="theme" role="group" aria-label="Orb style">
+    <button type="button" data-style-choice="dots" aria-pressed="true">Dots</button>
+    <button type="button" data-style-choice="glass" aria-pressed="false">Glass</button>
+  </div>
+  <div class="theme" id="stateGroup" role="group" aria-label="Glass state" hidden>
+    <button type="button" data-state-choice="listening" aria-pressed="true">Listening</button>
+    <button type="button" data-state-choice="thinking" aria-pressed="false">Thinking</button>
+  </div>
   <div class="theme" role="group" aria-label="Theme">
     <button type="button" data-theme-choice="auto" aria-pressed="true">Auto</button>
     <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
@@ -302,12 +311,165 @@
   const U = {};
   ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
+  // ---- Glass orb: a translucent shell plus five silk ribbons, drawn as plain triangle meshes ----
+  // Listening = sphere with thin wavy bands inside. Thinking = ring of wide ribbons wrapping a torus.
+  // One parametric surface per piece; uMorph blends sphere -> torus, with extra noise mid-way (the blob).
+  const NOISE_GLSL = vs.slice(vs.indexOf('vec3 mod289'), vs.indexOf('void main'));
+  const gvs = `#version 300 es
+  precision highp float;
+  layout(location=0) in vec3 aP; // x: along (0..1), y: across, z: kind (-1 shell, 0..4 ribbon)
+  uniform float uTime, uLevel, uBass, uHigh, uMorph, uSpin, uFlow;
+  uniform vec2 uFit;
+  out vec3 vN;
+  out vec2 vS;
+  out float vW, vK;
+  ${NOISE_GLSL}
+  const float PI = 3.1415926, TAU = 6.2831853;
+  const float RM = 0.76, RT = 0.26; // torus major / minor radius
+  vec3 rotX(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+  vec3 rotY(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
+
+  vec3 shellAt(vec2 q){
+    float th = q.x * TAU, ph = clamp(q.y, 0.002, 0.998) * PI;
+    vec3 sp = vec3(sin(ph) * cos(th), sin(ph) * sin(th), cos(ph));
+    // Same (th, ph) on the torus: front pole -> inner rim, silhouette -> outer rim.
+    float al = PI - 2.0 * ph;
+    float rad = RM + RT * cos(al);
+    vec3 to = vec3(rad * cos(th), rad * sin(th), RT * sin(al));
+    return mix(sp, to, uMorph);
+  }
+
+  vec3 ribbonAt(vec2 q, float i){
+    float s = q.x * TAU, w = q.y;
+    // Listening: a thin band that swoops above and below a tilted great circle.
+    float amp = (0.10 + 0.03 * i) * (1.0 + 1.2 * uLevel);
+    float lat = amp * sin(2.0 * s + i * 1.7 + uFlow * 0.8) + w * 0.11 * (1.0 + 0.5 * uLevel);
+    vec3 sp = vec3(cos(lat) * cos(s), cos(lat) * sin(s), sin(lat)) * 0.965;
+    sp = rotX(sp, 1.22 + 0.13 * (i - 2.0));
+    sp = rotY(sp, i * 1.2566 + uSpin);
+    // Thinking: a wide ribbon that wraps the tube once per lap, alternating direction.
+    float dir = mod(i, 2.0) < 0.5 ? 1.0 : -1.0;
+    float al = i * 1.2566 + dir * s + w * 0.55 + uFlow * dir;
+    float rr = RT * (0.88 + 0.08 * sin(i * 2.3));
+    float th = s + uSpin * 0.4;
+    float rad = RM + rr * cos(al);
+    vec3 to = vec3(rad * cos(th), rad * sin(th), rr * sin(al));
+    return mix(sp, to, uMorph);
+  }
+
+  vec3 place(vec2 q, float k){
+    vec3 p = k < -0.5 ? shellAt(q) : ribbonAt(q, k);
+    float t = uTime, listen = 1.0 - uMorph;
+    float blob = 0.02 + 0.22 * sin(PI * uMorph) + (0.07 * uLevel + 0.06 * uBass) * listen;
+    float n1 = snoise(p * 0.7 + vec3(0.0, t * 0.3, t * 0.2));
+    float n2 = snoise(p * 3.0 + vec3(t * 0.5, 0.0, -t * 0.3));
+    p *= 1.0 + blob * n1 + 0.012 * uHigh * n2 * listen + 0.05 * uLevel;
+    p *= 1.0 + 0.025 * sin(t * 2.2) * uMorph; // slow breathing while thinking
+    return rotX(p, mix(0.3, 0.14, uMorph));
+  }
+
+  void main(){
+    vec2 q = aP.xy; float k = aP.z;
+    vec3 p = place(q, k);
+    vec2 e = k < -0.5 ? vec2(1.0 / 160.0, 1.0 / 80.0) : vec2(1.0 / 320.0, 0.2);
+    vec3 pu = place(q + vec2(e.x, 0.0), k);
+    vec3 pv = place(q + vec2(0.0, q.y > 0.5 ? -e.y : e.y), k);
+    vN = cross(pu - p, pv - p);
+    vS = p.xy;
+    vW = q.y;
+    vK = k;
+    float d = 3.6;
+    gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
+  }`;
+
+  const gfs = `#version 300 es
+  precision highp float;
+  uniform float uLight, uLevel, uMorph;
+  in vec3 vN;
+  in vec2 vS;
+  in float vW, vK;
+  out vec4 outColor;
+  vec3 grad(vec2 s){
+    // Cyan top-left, blue, magenta along the bottom, red on the right.
+    float g = clamp(0.56 + 0.46 * dot(s, vec2(0.88, -0.48)), 0.0, 1.0);
+    vec3 c0 = vec3(0.30, 0.86, 1.0), c1 = vec3(0.12, 0.36, 1.0), c2 = vec3(0.80, 0.20, 0.92), c3 = vec3(1.0, 0.24, 0.14);
+    if (g < 0.33) return mix(c0, c1, g / 0.33);
+    if (g < 0.66) return mix(c1, c2, (g - 0.33) / 0.33);
+    return mix(c2, c3, (g - 0.66) / 0.34);
+  }
+  void main(){
+    vec3 n = normalize(vN + 1e-7);
+    float f = 1.0 - abs(n.z); // fresnel: 0 facing us, 1 edge-on
+    float a;
+    if (vK < -0.5) {
+      a = 0.05 + 0.85 * pow(f, 3.2);
+      vec3 nf = n * sign(n.z + 1e-6);
+      a += 0.55 * pow(max(0.0, dot(nf, normalize(vec3(-0.45, 0.55, 0.7)))), 40.0); // glint top-left
+    } else {
+      float e = abs(vW);
+      float line = smoothstep(0.6, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e)); // bright hem
+      float body = 1.0 - smoothstep(0.85, 1.0, e);
+      a = mix(0.07, 0.05, uMorph) * body + mix(0.75, 0.55, uMorph) * line + 0.35 * pow(f, 2.0) * body;
+      // Listening shows three bands; the other two fade in as it becomes the ring.
+      a *= mix(vK < 2.5 ? 1.0 : 0.0, 1.0, uMorph);
+    }
+    a *= 0.85 + 0.45 * uLevel * (1.0 - uMorph);
+    vec3 c = grad(vS);
+    // Dark: dense overlaps burn toward white. Light: they deepen instead.
+    float hot = smoothstep(0.55, 1.4, a);
+    c = mix(c, mix(vec3(1.0, 0.95, 0.97), c * 0.6, uLight), hot * 0.7);
+    float k = min(1.0, a);
+    outColor = vec4(c * k, k);
+  }`;
+
+  const gprog = gl.createProgram();
+  gl.attachShader(gprog, compile(gl.VERTEX_SHADER, gvs));
+  gl.attachShader(gprog, compile(gl.FRAGMENT_SHADER, gfs));
+  gl.linkProgram(gprog);
+  if (!gl.getProgramParameter(gprog, gl.LINK_STATUS)) { statusText.textContent = 'Shader error: ' + gl.getProgramInfoLog(gprog); return; }
+
+  // Meshes: one shell grid (160 x 80) and five ribbon strips (320 x 10). ~29k vertices, 16-bit indices.
+  const gVerts = [], gIdx = [];
+  function grid(nu, nv, kind, vMap) {
+    const base = gVerts.length / 3;
+    for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) gVerts.push(i / nu, vMap(j / nv), kind);
+    for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+      const a = base + j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1;
+      gIdx.push(a, b, c, b, d, c);
+    }
+  }
+  grid(160, 80, -1, v => v);
+  for (let r = 0; r < 5; r++) grid(320, 10, r, v => v * 2 - 1);
+  const gvao = gl.createVertexArray();
+  gl.bindVertexArray(gvao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gVerts), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(gIdx), gl.STATIC_DRAW);
+  const G_COUNT = gIdx.length;
+  gl.bindVertexArray(vao);
+
+  const GU = {};
+  ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+
   gl.useProgram(prog);
   gl.enable(gl.BLEND);
   // ---- Theme ----
   const themeButtons = document.querySelectorAll('[data-theme-choice]');
   const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
   let themeChoice = 'auto';
+  let styleChoice = 'dots';      // 'dots' | 'glass'
+  let stateChoice = 'listening'; // glass only: 'listening' | 'thinking'
+  const styleButtons = document.querySelectorAll('[data-style-choice]');
+  const stateButtons = document.querySelectorAll('[data-state-choice]');
+  const stateGroup = document.getElementById('stateGroup');
+  function applyStyle() {
+    styleButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.styleChoice === styleChoice)));
+    stateButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.stateChoice === stateChoice)));
+    stateGroup.hidden = styleChoice !== 'glass';
+  }
   function resolvedTheme() {
     if (themeChoice !== 'auto') return themeChoice;
     const host = document.documentElement.getAttribute('data-theme');
@@ -318,6 +480,8 @@
     const light = resolvedTheme() === 'light';
     document.body.setAttribute('data-orb', light ? 'light' : 'dark');
     themeButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeChoice === themeChoice)));
+    gl.useProgram(gprog);
+    gl.uniform1f(GU.uLight, light ? 1 : 0);
     gl.useProgram(prog);
     gl.uniform1f(U.uLight, light ? 1 : 0);
     if (light) { gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.clearColor(0.953, 0.961, 0.976, 1); }
@@ -340,6 +504,9 @@
     gl.viewport(0, 0, canvas.width, canvas.height);
     const s = 0.6 * Number(sizeInput.value);
     const fit = w > h ? [s * h / w, s] : [s, s * w / h];
+    gl.useProgram(gprog);
+    gl.uniform2f(GU.uFit, fit[0], fit[1]);
+    gl.useProgram(prog);
     gl.uniform2f(U.uFit, fit[0], fit[1]);
     gl.uniform1f(U.uDpr, dpr);
   }
@@ -359,6 +526,8 @@
     const q = new URLSearchParams();
     for (const k in controls) q.set(k, Number(controls[k].value).toString());
     q.set('theme', themeChoice);
+    q.set('orb', styleChoice);
+    if (styleChoice === 'glass') q.set('state', stateChoice);
     return q;
   }
   function shareUrl() { return location.origin + location.pathname + '?' + currentParams().toString(); }
@@ -376,6 +545,11 @@
     }
     const th = q.get('theme') || saved.theme;
     if (th === 'auto' || th === 'light' || th === 'dark') themeChoice = th;
+    const orb = q.get('orb') || saved.orb;
+    if (orb === 'dots' || orb === 'glass') styleChoice = orb;
+    const st = q.get('state') || saved.state;
+    if (st === 'listening' || st === 'thinking') stateChoice = st;
+    applyStyle();
     applyTheme();
     showValues();
     resize();
@@ -384,6 +558,8 @@
     const data = {};
     for (const k in controls) data[k] = Number(controls[k].value);
     data.theme = themeChoice;
+    data.orb = styleChoice;
+    data.state = stateChoice;
     try { localStorage.setItem(KEY, JSON.stringify(data)); } catch {}
     try { history.replaceState(null, '', location.pathname + '?' + currentParams().toString() + location.hash); } catch {}
   }
@@ -394,6 +570,16 @@
   themeButtons.forEach(b => b.addEventListener('click', () => {
     themeChoice = b.dataset.themeChoice;
     applyTheme();
+    saveSettings();
+  }));
+  styleButtons.forEach(b => b.addEventListener('click', () => {
+    styleChoice = b.dataset.styleChoice;
+    applyStyle();
+    saveSettings();
+  }));
+  stateButtons.forEach(b => b.addEventListener('click', () => {
+    stateChoice = b.dataset.stateChoice;
+    applyStyle();
     saveSettings();
   }));
   document.getElementById('copyLink').addEventListener('click', async () => {
@@ -523,6 +709,28 @@
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const start = performance.now();
   let rot = 0, last = start, motionTime = 0;
+  // Glass: morph progress 0 (listening sphere) -> 1 (thinking ring), eased, ~1.4 s each way.
+  let morphP = stateChoice === 'thinking' ? 1 : 0, spin = 0, flow = 0;
+  const MORPH_SECS = 1.4;
+
+  function drawGlass(dt, speed) {
+    const target = stateChoice === 'thinking' ? 1 : 0;
+    const step = reduceMotion ? 1 : dt / MORPH_SECS;
+    morphP += Math.max(-step, Math.min(step, target - morphP));
+    const m = morphP * morphP * (3 - 2 * morphP);
+    spin += dt * speed * (0.18 + 0.3 * live.level) * (1 + 1.6 * m);
+    flow += dt * speed * (0.35 + 0.9 * m);
+    gl.useProgram(gprog);
+    gl.bindVertexArray(gvao);
+    gl.uniform1f(GU.uTime, motionTime);
+    gl.uniform1f(GU.uLevel, live.level);
+    gl.uniform1f(GU.uBass, live.bass);
+    gl.uniform1f(GU.uHigh, live.high);
+    gl.uniform1f(GU.uMorph, m);
+    gl.uniform1f(GU.uSpin, spin);
+    gl.uniform1f(GU.uFlow, flow);
+    gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0);
+  }
 
   function frame(now) {
     const t = (now - start) / 1000;
@@ -534,6 +742,19 @@
     rot += dt * speed * (0.12 + live.level * 0.25);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
+    if (styleChoice === 'glass') {
+      drawGlass(dt, speed);
+    } else {
+      gl.useProgram(prog);
+      gl.bindVertexArray(vao);
+      drawDots();
+    }
+    const vals = [live.bass, live.mid, live.high, live.level];
+    bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
+    requestAnimationFrame(frame);
+  }
+
+  function drawDots() {
     gl.uniform1f(U.uTime, motionTime);
     gl.uniform1f(U.uLevel, live.level);
     gl.uniform1f(U.uBass, live.bass);
@@ -542,10 +763,6 @@
     gl.uniform1f(U.uRot, rot);
     gl.uniform1f(U.uPass, 1); gl.drawArrays(gl.POINTS, 0, COUNT); // halo
     gl.uniform1f(U.uPass, 0); gl.drawArrays(gl.POINTS, 0, COUNT); // crisp lines
-
-    const vals = [live.bass, live.mid, live.high, live.level];
-    bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
-    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 })();
