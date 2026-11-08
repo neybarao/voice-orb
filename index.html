@@ -419,7 +419,7 @@
     vec3 n = normalize(vN + 1e-7);
     float f = 1.0 - abs(n.z); // fresnel: 0 facing us, 1 edge-on
     vec3 c = grad(vS);
-    float a;
+    float a, wh = 0.0; // wh: near-white light on top of the colour (edges, crossings)
     if (vK < -0.5) {
       // Glass body: dim, deeper colour in the middle, a wide bright rim at the silhouette.
       a = 0.07 + 0.55 * pow(f, 2.0) + 0.5 * pow(f, 4.0) + 2.4 * pow(f, 12.0);
@@ -427,14 +427,22 @@
       vec3 nf = n * sign(n.z + 1e-6);
       a += 0.5 * pow(max(0.0, dot(nf, normalize(vec3(-0.5, 0.6, 0.62)))), 36.0); // glint top-left
       a *= mix(1.0, 0.8, uMorph);
+      wh = 0.35 * pow(f, 16.0); // thin white line right at the silhouette
     } else {
       float e = abs(vW);
       float band = 1.0 - smoothstep(0.7, 1.0, e);
       float hem = smoothstep(0.72, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e));
-      float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light   // listening ribbons
+      float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light
       float tube = 0.05 + 0.3 * pow(f, 1.8) + 1.1 * pow(f, 8.0);                            // thinking tubes
       a = mix(silk, tube, uMorph) * vVis;
-      a *= mix(0.3, 1.0, smoothstep(-0.7, 0.3, vZ)); // parts behind read dimmer through the glass
+      // Lit edges glow almost white; where two of them cross, the sum burns to white.
+      float edgeLine = smoothstep(0.82, 0.97, e) * (1.0 - smoothstep(0.97, 1.0, e));
+      float silkWh = edgeLine * (vW > 0.0 ? 1.0 : 0.3) * (0.9 + 3.0 * pow(f, 2.0)); // strongest where the band turns edge-on
+      float tubeWh = 1.2 * pow(f, 10.0);
+      wh = mix(silkWh, tubeWh, uMorph) * vVis;
+      float depth = mix(0.3, 1.0, smoothstep(-0.7, 0.3, vZ)); // parts behind read dimmer through the glass
+      a *= depth;
+      wh *= depth * depth;
     }
     a *= 0.9 + 0.4 * uLevel * (1.0 - uMorph);
     if (uLight > 0.5) {
@@ -444,7 +452,7 @@
       outColor = vec4(c * k, k);
     } else {
       // Dark: linear light into a float target; tone mapping turns overlaps white-hot.
-      outColor = vec4(c * a, a);
+      outColor = vec4(c * a + mix(c, vec3(1.0), 0.8) * wh * (1.0 + 0.5 * uLevel), a);
     }
   }`;
 
