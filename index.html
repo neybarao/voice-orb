@@ -463,7 +463,9 @@
       outColor = vec4(c * k, k);
     } else {
       // Dark: linear light into a float target; tone mapping turns overlaps white-hot.
-      outColor = vec4(c * a + mix(c, vec3(1.0), 0.8) * wh * (1.0 + 0.5 * uLevel), a);
+      // Thinking glows brighter; the gain grows with the morph so Listening is unchanged.
+      float gain = mix(1.0, 1.8, uMorph * uMorph);
+      outColor = vec4((c * a + mix(c, vec3(1.0), 0.8) * wh * (1.0 + 0.5 * uLevel)) * gain, a);
     }
   }`;
 
