@@ -311,23 +311,27 @@
   const U = {};
   ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
-  // ---- Glass orb: a translucent shell plus five silk ribbons, drawn as plain triangle meshes ----
-  // Listening = sphere with thin wavy bands inside. Thinking = ring of wide ribbons wrapping a torus.
-  // One parametric surface per piece; uMorph blends sphere -> torus, with extra noise mid-way (the blob).
+  // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
+  // Listening = glass sphere with two wide silk bands inside.
+  // Thinking  = glass ring made of three thick tubes, slightly offset from each other.
+  // uMorph blends sphere -> ring; mid-way the ribbons fade and the shell turns into a soft blob.
+  // In dark theme the scene renders to a float target and gets a quarter-res bloom.
   const NOISE_GLSL = vs.slice(vs.indexOf('vec3 mod289'), vs.indexOf('void main'));
+  const RIBBONS = 3, RIB_ALONG = 320, RIB_ACROSS = 24, SH_U = 160, SH_V = 80;
   const gvs = `#version 300 es
   precision highp float;
-  layout(location=0) in vec3 aP; // x: along (0..1), y: across, z: kind (-1 shell, 0..4 ribbon)
+  layout(location=0) in vec3 aP; // x: along (0..1), y: across, z: kind (-1 shell, 0..2 ribbon)
   uniform float uTime, uLevel, uBass, uHigh, uMorph, uSpin, uFlow;
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
-  out float vW, vK;
+  out float vW, vK, vVis, vZ;
   ${NOISE_GLSL}
   const float PI = 3.1415926, TAU = 6.2831853;
-  const float RM = 0.76, RT = 0.26; // torus major / minor radius
+  const float RM = 0.74, RT = 0.22; // glass torus: major / minor radius
   vec3 rotX(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
   vec3 rotY(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
+  vec3 rotZ(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
 
   vec3 shellAt(vec2 q){
     float th = q.x * TAU, ph = clamp(q.y, 0.002, 0.998) * PI;
@@ -336,48 +340,59 @@
     float al = PI - 2.0 * ph;
     float rad = RM + RT * cos(al);
     vec3 to = vec3(rad * cos(th), rad * sin(th), RT * sin(al));
-    return mix(sp, to, uMorph);
+    // The poles become the hole; hold them shut until late so the blob stays solid mid-way.
+    float mm = mix(uMorph, pow(uMorph, 4.0), 1.0 - sin(ph));
+    return mix(sp, to, mm);
   }
 
   vec3 ribbonAt(vec2 q, float i){
     float s = q.x * TAU, w = q.y;
-    // Listening: a thin band that swoops above and below a tilted great circle.
-    float amp = (0.10 + 0.03 * i) * (1.0 + 1.2 * uLevel);
-    float lat = amp * sin(2.0 * s + i * 1.7 + uFlow * 0.8) + w * 0.11 * (1.0 + 0.5 * uLevel);
-    vec3 sp = vec3(cos(lat) * cos(s), cos(lat) * sin(s), sin(lat)) * 0.965;
-    sp = rotX(sp, 1.22 + 0.13 * (i - 2.0));
-    sp = rotY(sp, i * 1.2566 + uSpin);
-    // Thinking: a wide ribbon that wraps the tube once per lap, alternating direction.
-    float dir = mod(i, 2.0) < 0.5 ? 1.0 : -1.0;
-    float al = i * 1.2566 + dir * s + w * 0.55 + uFlow * dir;
-    float rr = RT * (0.88 + 0.08 * sin(i * 2.3));
-    float th = s + uSpin * 0.4;
-    float rad = RM + rr * cos(al);
-    vec3 to = vec3(rad * cos(th), rad * sin(th), rr * sin(al));
+    // Listening: a wide band around a tilted great circle, with a gentle swoop.
+    float amp = 0.09 * (1.0 + 1.2 * uLevel);
+    float lat = amp * sin(2.0 * s + i * 2.1 + uFlow * 0.6) + w * 0.26;
+    vec3 sp = vec3(cos(lat) * cos(s), sin(lat), cos(lat) * sin(s)) * 0.975;
+    sp = rotZ(sp, i < 0.5 ? -0.45 : (i < 1.5 ? 0.32 : 0.05));
+    sp = rotX(sp, 0.42 + 0.12 * i);
+    sp = rotY(sp, uSpin * 0.5 + i * 1.4);
+    // Thinking: a closed tube around the ring, its centre offset and tilted a little.
+    // The three tubes braid: each one's centre circles inside the ring's cross-section once per lap.
+    float a = w * PI;
+    float rr = 0.15 + 0.01 * i;
+    float ph = i * 2.094 + s + uFlow;
+    float th = s + uSpin * 0.3;
+    float R = 0.74 + 0.05 * cos(ph);
+    float z = 0.05 * sin(ph);
+    vec3 to = vec3((R + rr * cos(a)) * cos(th), (R + rr * cos(a)) * sin(th), z + rr * sin(a));
     return mix(sp, to, uMorph);
   }
 
   vec3 place(vec2 q, float k){
     vec3 p = k < -0.5 ? shellAt(q) : ribbonAt(q, k);
     float t = uTime, listen = 1.0 - uMorph;
-    float blob = 0.02 + 0.22 * sin(PI * uMorph) + (0.07 * uLevel + 0.06 * uBass) * listen;
+    float blob = 0.012 + 0.2 * sin(PI * uMorph) + (0.05 * uLevel + 0.05 * uBass) * listen;
     float n1 = snoise(p * 0.7 + vec3(0.0, t * 0.3, t * 0.2));
-    float n2 = snoise(p * 3.0 + vec3(t * 0.5, 0.0, -t * 0.3));
-    p *= 1.0 + blob * n1 + 0.012 * uHigh * n2 * listen + 0.05 * uLevel;
-    p *= 1.0 + 0.025 * sin(t * 2.2) * uMorph; // slow breathing while thinking
-    return rotX(p, mix(0.3, 0.14, uMorph));
+    float n2 = snoise(p * 2.6 + vec3(t * 0.5, 0.0, -t * 0.3));
+    p *= 1.0 + blob * n1 + 0.01 * uHigh * n2 * listen + 0.04 * uLevel * listen;
+    p *= 1.0 + 0.02 * sin(t * 2.0) * uMorph; // slow breathing while thinking
+    return rotX(p, mix(0.0, 0.12, uMorph));
   }
 
   void main(){
     vec2 q = aP.xy; float k = aP.z;
     vec3 p = place(q, k);
-    vec2 e = k < -0.5 ? vec2(1.0 / 160.0, 1.0 / 80.0) : vec2(1.0 / 320.0, 0.2);
+    vec2 e = k < -0.5 ? vec2(1.0 / 160.0, 1.0 / 80.0) : vec2(1.0 / 320.0, 0.08);
     vec3 pu = place(q + vec2(e.x, 0.0), k);
     vec3 pv = place(q + vec2(0.0, q.y > 0.5 ? -e.y : e.y), k);
     vN = cross(pu - p, pv - p);
+    // The sphere's pole faces the camera, where the finite-difference normal degenerates; use the radial one there.
+    if (k < -0.5 && (q.y < 0.05 || q.y > 0.95)) vN = mix(normalize(vN + 1e-9), normalize(p), 1.0 - uMorph);
     vS = p.xy;
     vW = q.y;
     vK = k;
+    // Ribbon 3 only exists in the ring; all ribbons step back during the blob.
+    float vis = k > 1.5 ? uMorph : 1.0;
+    vVis = vis * (1.0 - 0.9 * sin(PI * uMorph));
+    vZ = p.z;
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
   }`;
@@ -387,39 +402,50 @@
   uniform float uLight, uLevel, uMorph;
   in vec3 vN;
   in vec2 vS;
-  in float vW, vK;
+  in float vW, vK, vVis, vZ;
   out vec4 outColor;
   vec3 grad(vec2 s){
-    // Cyan top-left, blue, magenta along the bottom, red on the right.
-    float g = clamp(0.56 + 0.46 * dot(s, vec2(0.88, -0.48)), 0.0, 1.0);
-    vec3 c0 = vec3(0.30, 0.86, 1.0), c1 = vec3(0.12, 0.36, 1.0), c2 = vec3(0.80, 0.20, 0.92), c3 = vec3(1.0, 0.24, 0.14);
-    if (g < 0.33) return mix(c0, c1, g / 0.33);
-    if (g < 0.66) return mix(c1, c2, (g - 0.33) / 0.33);
-    return mix(c2, c3, (g - 0.66) / 0.34);
+    // Left half blue (cyan up top), right half red, violet only in the seam, pink along the bottom.
+    float g = clamp(0.5 + 0.6 * dot(s, vec2(0.96, -0.28)), 0.0, 1.0);
+    vec3 c0 = vec3(0.22, 0.58, 1.0), c1 = vec3(0.08, 0.26, 1.0), c2 = vec3(0.55, 0.16, 0.88);
+    vec3 c3 = vec3(1.0, 0.14, 0.12), c4 = vec3(1.0, 0.22, 0.14);
+    vec3 c = g < 0.38 ? mix(c0, c1, g / 0.38)
+           : g < 0.54 ? mix(c1, c2, (g - 0.38) / 0.16)
+           : g < 0.70 ? mix(c2, c3, (g - 0.54) / 0.16)
+           : mix(c3, c4, (g - 0.70) / 0.30);
+    return mix(c, vec3(1.0, 0.24, 0.66), smoothstep(-0.55, -1.0, s.y) * 0.45);
   }
   void main(){
     vec3 n = normalize(vN + 1e-7);
     float f = 1.0 - abs(n.z); // fresnel: 0 facing us, 1 edge-on
+    vec3 c = grad(vS);
     float a;
     if (vK < -0.5) {
-      a = 0.05 + 0.85 * pow(f, 3.2);
+      // Glass body: dim, deeper colour in the middle, a wide bright rim at the silhouette.
+      a = 0.07 + 0.55 * pow(f, 2.0) + 0.5 * pow(f, 4.0) + 2.4 * pow(f, 12.0);
+      c *= mix(0.45, 1.0, smoothstep(0.0, 0.8, f));
       vec3 nf = n * sign(n.z + 1e-6);
-      a += 0.55 * pow(max(0.0, dot(nf, normalize(vec3(-0.45, 0.55, 0.7)))), 40.0); // glint top-left
+      a += 0.5 * pow(max(0.0, dot(nf, normalize(vec3(-0.5, 0.6, 0.62)))), 36.0); // glint top-left
+      a *= mix(1.0, 0.8, uMorph);
     } else {
       float e = abs(vW);
-      float line = smoothstep(0.6, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e)); // bright hem
-      float body = 1.0 - smoothstep(0.85, 1.0, e);
-      a = mix(0.07, 0.05, uMorph) * body + mix(0.75, 0.55, uMorph) * line + 0.35 * pow(f, 2.0) * body;
-      // Listening shows three bands; the other two fade in as it becomes the ring.
-      a *= mix(vK < 2.5 ? 1.0 : 0.0, 1.0, uMorph);
+      float band = 1.0 - smoothstep(0.7, 1.0, e);
+      float hem = smoothstep(0.72, 0.95, e) * (1.0 - smoothstep(0.95, 1.0, e));
+      float silk = band * (0.04 + 0.6 * pow(f, 2.6)) + hem * (vW > 0.0 ? 1.6 : 0.35); // one edge catches the light   // listening ribbons
+      float tube = 0.05 + 0.3 * pow(f, 1.8) + 1.1 * pow(f, 8.0);                            // thinking tubes
+      a = mix(silk, tube, uMorph) * vVis;
+      a *= mix(0.3, 1.0, smoothstep(-0.7, 0.3, vZ)); // parts behind read dimmer through the glass
     }
-    a *= 0.85 + 0.45 * uLevel * (1.0 - uMorph);
-    vec3 c = grad(vS);
-    // Dark: dense overlaps burn toward white. Light: they deepen instead.
-    float hot = smoothstep(0.55, 1.4, a);
-    c = mix(c, mix(vec3(1.0, 0.95, 0.97), c * 0.6, uLight), hot * 0.7);
-    float k = min(1.0, a);
-    outColor = vec4(c * k, k);
+    a *= 0.9 + 0.4 * uLevel * (1.0 - uMorph);
+    if (uLight > 0.5) {
+      // Light: no bloom; dense overlaps deepen, coverage caps at 1.
+      float k = min(1.0, a * 0.7);
+      c = mix(c, c * 0.6, smoothstep(0.55, 1.4, a) * 0.6);
+      outColor = vec4(c * k, k);
+    } else {
+      // Dark: linear light into a float target; tone mapping turns overlaps white-hot.
+      outColor = vec4(c * a, a);
+    }
   }`;
 
   const gprog = gl.createProgram();
@@ -428,7 +454,7 @@
   gl.linkProgram(gprog);
   if (!gl.getProgramParameter(gprog, gl.LINK_STATUS)) { statusText.textContent = 'Shader error: ' + gl.getProgramInfoLog(gprog); return; }
 
-  // Meshes: one shell grid (160 x 80) and five ribbon strips (320 x 10). ~29k vertices, 16-bit indices.
+  // Meshes: one shell grid and three ribbon strips. ~36k vertices, 16-bit indices.
   const gVerts = [], gIdx = [];
   function grid(nu, nv, kind, vMap) {
     const base = gVerts.length / 3;
@@ -438,8 +464,8 @@
       gIdx.push(a, b, c, b, d, c);
     }
   }
-  grid(160, 80, -1, v => v);
-  for (let r = 0; r < 5; r++) grid(320, 10, r, v => v * 2 - 1);
+  grid(SH_U, SH_V, -1, v => v);
+  for (let r = 0; r < RIBBONS; r++) grid(RIB_ALONG, RIB_ACROSS, r, v => v * 2 - 1);
   const gvao = gl.createVertexArray();
   gl.bindVertexArray(gvao);
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -453,6 +479,75 @@
 
   const GU = {};
   ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+
+  // ---- Bloom (dark theme, glass only): scene -> 1/4 res -> two blur rounds -> composite ----
+  const postVs = `#version 300 es
+  out vec2 vUv;
+  void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); vUv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+  const blurFs = `#version 300 es
+  precision highp float;
+  uniform sampler2D uTex; uniform vec2 uDir;
+  in vec2 vUv; out vec4 o;
+  void main(){
+    vec3 c = texture(uTex, vUv).rgb * 0.227;
+    c += (texture(uTex, vUv + uDir * 1.385).rgb + texture(uTex, vUv - uDir * 1.385).rgb) * 0.316;
+    c += (texture(uTex, vUv + uDir * 3.231).rgb + texture(uTex, vUv - uDir * 3.231).rgb) * 0.070;
+    o = vec4(c, 1.0);
+  }`;
+  const compFs = `#version 300 es
+  precision highp float;
+  uniform sampler2D uScene, uBloom; uniform vec3 uBg; uniform float uGlow;
+  in vec2 vUv; out vec4 o;
+  void main(){
+    vec3 c = texture(uScene, vUv).rgb + texture(uBloom, vUv).rgb * uGlow;
+    c = 1.0 - exp(-c); // soft shoulder: saturated colours roll toward white
+    o = vec4(uBg + c * (1.0 - uBg), 1.0);
+  }`;
+  function program(vsrc, fsrc) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+  const blurProg = program(postVs, blurFs);
+  const compProg = program(postVs, compFs);
+  const BU = { tex: gl.getUniformLocation(blurProg, 'uTex'), dir: gl.getUniformLocation(blurProg, 'uDir') };
+  const CU = { scene: gl.getUniformLocation(compProg, 'uScene'), bloom: gl.getUniformLocation(compProg, 'uBloom'),
+               bg: gl.getUniformLocation(compProg, 'uBg'), glow: gl.getUniformLocation(compProg, 'uGlow') };
+  const postVao = gl.createVertexArray();
+  const floatOK = !!gl.getExtension('EXT_color_buffer_float');
+  function makeTarget(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, floatOK ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, floatOK ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, w, h };
+  }
+  let rtScene = null, rtA = null, rtB = null;
+  function freeTarget(t) { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } }
+  function sizeTargets(w, h) {
+    [rtScene, rtA, rtB].forEach(freeTarget);
+    rtScene = makeTarget(w, h);
+    const qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
+    rtA = makeTarget(qw, qh);
+    rtB = makeTarget(qw, qh);
+  }
+  function blurPass(src, dst, dx, dy) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, dst.w, dst.h);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform2f(BU.dir, dx / src.w, dy / src.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
 
   gl.useProgram(prog);
   gl.enable(gl.BLEND);
@@ -476,8 +571,10 @@
     if (host === 'light' || host === 'dark') return host;
     return systemDark.matches ? 'dark' : 'light';
   }
+  let isLight = false;
   function applyTheme() {
     const light = resolvedTheme() === 'light';
+    isLight = light;
     document.body.setAttribute('data-orb', light ? 'light' : 'dark');
     themeButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeChoice === themeChoice)));
     gl.useProgram(gprog);
@@ -502,6 +599,7 @@
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
     gl.viewport(0, 0, canvas.width, canvas.height);
+    sizeTargets(canvas.width, canvas.height);
     const s = 0.6 * Number(sizeInput.value);
     const fit = w > h ? [s * h / w, s] : [s, s * w / h];
     gl.useProgram(gprog);
@@ -729,7 +827,37 @@
     gl.uniform1f(GU.uMorph, m);
     gl.uniform1f(GU.uSpin, spin);
     gl.uniform1f(GU.uFlow, flow);
+    if (isLight) { gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0); return; }
+
+    // Dark: scene into a float target (additive), then bloom and composite onto the background.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rtScene.fbo);
+    gl.viewport(0, 0, rtScene.w, rtScene.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.blendFunc(gl.ONE, gl.ONE);
     gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0);
+
+    gl.disable(gl.BLEND);
+    gl.useProgram(blurProg);
+    gl.bindVertexArray(postVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(BU.tex, 0);
+    blurPass(rtScene, rtA, 0, 0);   // downsample
+    blurPass(rtA, rtB, 1, 0); blurPass(rtB, rtA, 0, 1);
+    blurPass(rtA, rtB, 2.5, 0); blurPass(rtB, rtA, 0, 2.5);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(compProg);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, rtScene.tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, rtA.tex);
+    gl.uniform1i(CU.scene, 0); gl.uniform1i(CU.bloom, 1);
+    gl.uniform3f(CU.bg, 0.027, 0.043, 0.078);
+    gl.uniform1f(CU.glow, 0.6);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.BLEND);
+    gl.clearColor(0.027, 0.043, 0.078, 1); // dark clear colour for the next frame (blend stays ONE, ONE)
   }
 
   function frame(now) {
