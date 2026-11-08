@@ -500,6 +500,9 @@
   ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight','uBreak'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
+  // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
+  const satParam = Number(new URLSearchParams(location.search).get('sat'));
+  const GLASS_SAT = Number.isFinite(satParam) && satParam > 0 ? Math.min(3, satParam) : 1.45;
   gl.useProgram(gprog);
   gl.uniform1f(GU.uBreak, BROKEN_EDGES ? 1 : 0);
 
@@ -519,11 +522,14 @@
   }`;
   const compFs = `#version 300 es
   precision highp float;
-  uniform sampler2D uScene, uBloom; uniform vec3 uBg; uniform float uGlow;
+  uniform sampler2D uScene, uBloom; uniform vec3 uBg; uniform float uGlow, uSat;
   in vec2 vUv; out vec4 o;
   void main(){
     vec3 c = texture(uScene, vUv).rgb + texture(uBloom, vUv).rgb * uGlow;
     c = 1.0 - exp(-c); // soft shoulder: saturated colours roll toward white
+    // Win back the saturation that glow and the shoulder wash out; near-white highlights barely move.
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = clamp(mix(vec3(lum), c, uSat), 0.0, 1.0);
     o = vec4(uBg + c * (1.0 - uBg), 1.0);
   }`;
   function program(vsrc, fsrc) {
@@ -538,7 +544,8 @@
   const compProg = program(postVs, compFs);
   const BU = { tex: gl.getUniformLocation(blurProg, 'uTex'), dir: gl.getUniformLocation(blurProg, 'uDir') };
   const CU = { scene: gl.getUniformLocation(compProg, 'uScene'), bloom: gl.getUniformLocation(compProg, 'uBloom'),
-               bg: gl.getUniformLocation(compProg, 'uBg'), glow: gl.getUniformLocation(compProg, 'uGlow') };
+               bg: gl.getUniformLocation(compProg, 'uBg'), glow: gl.getUniformLocation(compProg, 'uGlow'),
+               sat: gl.getUniformLocation(compProg, 'uSat') };
   const postVao = gl.createVertexArray();
   const floatOK = !!gl.getExtension('EXT_color_buffer_float');
   function makeTarget(w, h) {
@@ -877,6 +884,7 @@
     gl.uniform1i(CU.scene, 0); gl.uniform1i(CU.bloom, 1);
     gl.uniform3f(CU.bg, 0.027, 0.043, 0.078);
     gl.uniform1f(CU.glow, 0.6);
+    gl.uniform1f(CU.sat, GLASS_SAT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0);
     gl.enable(gl.BLEND);
