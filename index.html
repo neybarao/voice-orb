@@ -137,6 +137,30 @@
   .meter { display: inline-flex; gap: 3px; align-items: end; height: 12px; }
   .meter i { width: 3px; background: var(--muted); border-radius: 1px; height: 2px; transition: height 60ms linear; }
   @media (prefers-reduced-motion: reduce) { .meter i { transition: none; } }
+  button.file[hidden] { display: none; }
+  .export {
+    width: min(360px, calc(100% - 32px));
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    color: var(--ink);
+    font: 13px/1.45 var(--font-ui);
+    box-sizing: border-box;
+  }
+  .export::backdrop { background: rgba(0, 0, 0, 0.35); }
+  .export h2 { margin: 0 0 4px; font: 600 15px var(--font-ui); }
+  .export p { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+  .export .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .export .row > span { color: var(--muted); font-size: 12px; }
+  .export .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .export .go { min-height: 40px; padding: 0 16px; border: 0; border-radius: 11px; background: linear-gradient(90deg, var(--warm), var(--cool)); color: #fff; font: 600 13px var(--font-ui); cursor: pointer; }
+  .export .go:disabled { opacity: 0.5; cursor: default; }
+  .export progress { width: 100%; height: 6px; accent-color: var(--warm); }
+  .export output { display: block; min-height: 1.4em; margin-top: 6px; font: 11px/1.4 var(--font-data); color: var(--muted); }
+  .rendering #stage { visibility: hidden; }
 </style>
 </head>
 <body>
@@ -156,6 +180,7 @@
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
+  <button class="file" id="exportBtn" type="button" hidden>Export video</button>
   <div class="theme" role="group" aria-label="Orb style">
     <button type="button" data-style-choice="dots" aria-pressed="true">Dots</button>
     <button type="button" data-style-choice="glass" aria-pressed="false">Glass</button>
@@ -174,6 +199,37 @@
     <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
   </div>
 </div>
+
+<dialog class="export" id="exportDlg" aria-labelledby="exportTitle">
+  <h2 id="exportTitle">Export loop video</h2>
+  <p>Listening → Thinking → Listening, seamless loop. MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.</p>
+  <div class="row"><span>Size</span>
+    <div class="theme" role="group" aria-label="Video size">
+      <button type="button" data-export-size="720" aria-pressed="false">720</button>
+      <button type="button" data-export-size="1080" aria-pressed="true">1080</button>
+      <button type="button" data-export-size="1440" aria-pressed="false">1440</button>
+    </div>
+  </div>
+  <div class="row"><span>Frame rate</span>
+    <div class="theme" role="group" aria-label="Frame rate">
+      <button type="button" data-export-fps="30" aria-pressed="false">30</button>
+      <button type="button" data-export-fps="60" aria-pressed="true">60</button>
+    </div>
+  </div>
+  <div class="row"><span>Loop length</span>
+    <div class="theme" role="group" aria-label="Loop length">
+      <button type="button" data-export-len="6" aria-pressed="false">6 s</button>
+      <button type="button" data-export-len="8" aria-pressed="true">8 s</button>
+      <button type="button" data-export-len="10" aria-pressed="false">10 s</button>
+    </div>
+  </div>
+  <progress id="exportProg" value="0" max="1" hidden></progress>
+  <output id="exportMsg" aria-live="polite"></output>
+  <div class="actions">
+    <button class="file" type="button" id="exportClose">Close</button>
+    <button class="go" type="button" id="exportGo">Export</button>
+  </div>
+</dialog>
 
 <script>
 (() => {
@@ -321,7 +377,10 @@
   const gvs = `#version 300 es
   precision highp float;
   layout(location=0) in vec3 aP; // x: along (0..1), y: across, z: kind (-1 shell, 0..2 ribbon)
-  uniform float uTime, uLevel, uBass, uHigh, uMorph, uSpin, uFlow, uBreak;
+  // Two sets of clocks: *L drive only what Listening shows, *T only what Thinking shows.
+  // Live they tick together; the loop export rewinds each one while the other state fills the screen.
+  uniform float uTimeL, uTimeT, uSpinL, uSpinT, uFlowL, uFlowT;
+  uniform float uLevel, uBass, uHigh, uMorph, uBreak;
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
@@ -349,19 +408,19 @@
     float s = q.x * TAU, w = q.y;
     // Listening: a wide band around a tilted great circle, with a gentle swoop.
     float amp = 0.09 * (1.0 + 1.2 * uLevel);
-    float lat = amp * sin(2.0 * s + i * 2.1 + uFlow * 0.6) + w * 0.26;
+    float lat = amp * sin(2.0 * s + i * 2.1 + uFlowL * 0.6) + w * 0.26;
     vec3 sp = vec3(cos(lat) * cos(s), sin(lat), cos(lat) * sin(s)) * 0.975;
     sp = rotZ(sp, i < 0.5 ? -0.45 : (i < 1.5 ? 0.32 : 0.05));
     sp = rotX(sp, 0.42 + 0.12 * i);
-    sp = rotY(sp, uSpin * 0.5 + i * 1.4);
+    sp = rotY(sp, uSpinL * 0.5 + i * 1.4);
     // Thinking: a closed tube around the ring, its centre offset and tilted a little.
     // The three tubes braid: each one's centre circles inside the ring's cross-section once per lap.
     float a = w * PI;
     // Thickness swells and thins along each tube, drifting slowly.
-    float rr = (0.15 + 0.01 * i) * (1.0 + 0.1 * snoise(vec3(cos(s) * 0.9, sin(s) * 0.9, i * 2.7 + uTime * 0.28)));
-    float ph = i * 2.094 + s + uFlow;
-    float th = s + uSpin * 0.3;
-    float braid = 0.05 * (1.0 + 0.4 * snoise(vec3(cos(s) * 0.8, sin(s) * 0.8, i * 1.9 - uTime * 0.22)));
+    float rr = (0.15 + 0.01 * i) * (1.0 + 0.1 * snoise(vec3(cos(s) * 0.9, sin(s) * 0.9, i * 2.7 + uTimeT * 0.28)));
+    float ph = i * 2.094 + s + uFlowT;
+    float th = s + uSpinT * 0.3;
+    float braid = 0.05 * (1.0 + 0.4 * snoise(vec3(cos(s) * 0.8, sin(s) * 0.8, i * 1.9 - uTimeT * 0.22)));
     float R = 0.74 + braid * cos(ph);
     float z = braid * sin(ph);
     vec3 to = vec3((R + rr * cos(a)) * cos(th), (R + rr * cos(a)) * sin(th), z + rr * sin(a));
@@ -370,12 +429,13 @@
 
   vec3 place(vec2 q, float k){
     vec3 p = k < -0.5 ? shellAt(q) : ribbonAt(q, k);
-    float t = uTime, listen = 1.0 - uMorph;
-    float blob = 0.012 + 0.2 * sin(PI * uMorph) + (0.05 * uLevel + 0.05 * uBass) * listen;
+    float t = uTimeL, listen = 1.0 - uMorph;
+    float blob = 0.012 * listen + 0.2 * sin(PI * uMorph) + (0.05 * uLevel + 0.05 * uBass) * listen;
     float n1 = snoise(p * 0.7 + vec3(0.0, t * 0.3, t * 0.2));
     float n2 = snoise(p * 2.6 + vec3(t * 0.5, 0.0, -t * 0.3));
     p *= 1.0 + blob * n1 + 0.01 * uHigh * n2 * listen + 0.04 * uLevel * listen;
     // Thinking: an uneven breath plus a slow liquid wobble of the whole ring.
+    t = uTimeT;
     float breath = (sin(t * 1.7) + 0.6 * sin(t * 2.93 + 1.3) + 0.35 * sin(t * 0.71 + 2.1)) / 1.95;
     float wob = snoise(p * 0.55 + vec3(t * 0.2, -t * 0.15, t * 0.17));
     p *= 1.0 + (0.02 * breath + 0.04 * wob) * uMorph;
@@ -389,8 +449,16 @@
     vec3 pu = place(q + vec2(e.x, 0.0), k);
     vec3 pv = place(q + vec2(0.0, q.y > 0.5 ? -e.y : e.y), k);
     vN = cross(pu - p, pv - p);
-    // The sphere's pole faces the camera, where the finite-difference normal degenerates; use the radial one there.
-    if (k < -0.5 && (q.y < 0.05 || q.y > 0.95)) vN = mix(normalize(vN + 1e-9), normalize(p), 1.0 - uMorph);
+    // Around the poles the finite-difference normal degenerates: at the sphere's pole, and mid-morph where the pole
+    // becomes a tiny funnel whose sideways normals light up the rim term. Blend toward the radial normal over a soft
+    // band, and only hand back the real normals once the ring's hole is properly open.
+    if (k < -0.5) {
+      float band = 1.0 - smoothstep(0.0, 0.16, min(q.y, 1.0 - q.y));
+      float keep = 1.0 - smoothstep(0.55, 0.85, uMorph);
+      vec3 nFD = normalize(vN + 1e-9);
+      nFD *= sign(dot(nFD, p) + 1e-6); // same side as the radial normal, or the blend cancels out mid-way
+      vN = mix(nFD, normalize(p), band * keep);
+    }
     vS = p.xy;
     vW = q.y;
     vK = k;
@@ -401,12 +469,12 @@
     // Broken strokes: each edge of a band fades out along stretches of its length, and the gaps drift.
     float sa = q.x * TAU;
     vec3 cp = vec3(cos(sa), sin(sa), k * 3.7) * 0.8;
-    float ga = smoothstep(-0.6, 0.15, snoise(cp + vec3(0.0, 0.0, uFlow * 0.25)));
-    float gb = smoothstep(-0.6, 0.15, snoise(cp + vec3(5.3, 1.7, uFlow * 0.25)));
+    float ga = smoothstep(-0.6, 0.15, snoise(cp + vec3(0.0, 0.0, uFlowL * 0.25)));
+    float gb = smoothstep(-0.6, 0.15, snoise(cp + vec3(5.3, 1.7, uFlowL * 0.25)));
     vGapA = mix(1.0, ga, uBreak);
     vGapB = mix(1.0, gb, uBreak);
     // Thinking tubes: same idea on their bright rims; cos(around-tube) makes inner and outer rims break differently.
-    float gt = smoothstep(-0.25, 0.35, snoise(cp * 1.4 + vec3(cos(q.y * PI) * 1.2, 2.1, uFlow * 0.25)));
+    float gt = smoothstep(-0.25, 0.35, snoise(cp * 1.4 + vec3(cos(q.y * PI) * 1.2, 2.1, uFlowT * 0.25)));
     vGapT = mix(1.0, gt, uBreak);
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
@@ -504,7 +572,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTime','uLevel','uBass','uHigh','uMorph','uSpin','uFlow','uFit','uLight','uBreak'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -529,10 +597,11 @@
   }`;
   const compFs = `#version 300 es
   precision highp float;
-  uniform sampler2D uScene, uBloom; uniform vec3 uBg; uniform float uGlow, uSat;
+  uniform sampler2D uScene, uBloom; uniform vec3 uBg; uniform float uGlow, uSat, uFlipY;
   in vec2 vUv; out vec4 o;
   void main(){
-    vec3 c = texture(uScene, vUv).rgb + texture(uBloom, vUv).rgb * uGlow;
+    vec2 uv = vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, uFlipY)); // export reads pixels top-down
+    vec3 c = texture(uScene, uv).rgb + texture(uBloom, uv).rgb * uGlow;
     c = 1.0 - exp(-c); // soft shoulder: saturated colours roll toward white
     // Win back the saturation that glow and the shoulder wash out; near-white highlights barely move.
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -552,13 +621,14 @@
   const BU = { tex: gl.getUniformLocation(blurProg, 'uTex'), dir: gl.getUniformLocation(blurProg, 'uDir') };
   const CU = { scene: gl.getUniformLocation(compProg, 'uScene'), bloom: gl.getUniformLocation(compProg, 'uBloom'),
                bg: gl.getUniformLocation(compProg, 'uBg'), glow: gl.getUniformLocation(compProg, 'uGlow'),
-               sat: gl.getUniformLocation(compProg, 'uSat') };
+               sat: gl.getUniformLocation(compProg, 'uSat'), flip: gl.getUniformLocation(compProg, 'uFlipY') };
   const postVao = gl.createVertexArray();
   const floatOK = !!gl.getExtension('EXT_color_buffer_float');
-  function makeTarget(w, h) {
+  function makeTarget(w, h, bytes) {
+    const hdr = floatOK && !bytes; // bytes: 8-bit RGBA, so readPixels can return it directly
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, floatOK ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, floatOK ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+    gl.texImage2D(gl.TEXTURE_2D, 0, hdr ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, hdr ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -601,6 +671,7 @@
     styleButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.styleChoice === styleChoice)));
     stateButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.stateChoice === stateChoice)));
     stateGroup.hidden = styleChoice !== 'glass';
+    document.getElementById('exportBtn').hidden = styleChoice !== 'glass';
   }
   function resolvedTheme() {
     if (themeChoice !== 'auto') return themeChoice;
@@ -629,7 +700,7 @@
   const speedInput = document.getElementById('speed');
   const sizeOut = document.getElementById('sizeOut');
   const speedOut = document.getElementById('speedOut');
-  let dpr = 1;
+  let dpr = 1, liveFit = [0.6, 0.6];
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -639,8 +710,7 @@
     sizeTargets(canvas.width, canvas.height);
     const s = 0.6 * Number(sizeInput.value);
     const fit = w > h ? [s * h / w, s] : [s, s * w / h];
-    gl.useProgram(gprog);
-    gl.uniform2f(GU.uFit, fit[0], fit[1]);
+    liveFit = fit;
     gl.useProgram(prog);
     gl.uniform2f(U.uFit, fit[0], fit[1]);
     gl.uniform1f(U.uDpr, dpr);
@@ -848,6 +918,56 @@
   let morphP = stateChoice === 'thinking' ? 1 : 0, spin = 0, flow = 0;
   const MORPH_SECS = 1.4;
 
+  // One glass frame: clocks + audio values in, drawn to `out` (null = screen) through the bloom targets `rt`.
+  function renderGlass(st, rt, out, w, h, bg, flipY) {
+    gl.useProgram(gprog);
+    gl.bindVertexArray(gvao);
+    gl.uniform2f(GU.uFit, st.fit[0], st.fit[1]);
+    gl.uniform1f(GU.uTimeL, st.timeL); gl.uniform1f(GU.uTimeT, st.timeT);
+    gl.uniform1f(GU.uSpinL, st.spinL); gl.uniform1f(GU.uSpinT, st.spinT);
+    gl.uniform1f(GU.uFlowL, st.flowL); gl.uniform1f(GU.uFlowT, st.flowT);
+    gl.uniform1f(GU.uLevel, st.level);
+    gl.uniform1f(GU.uBass, st.bass);
+    gl.uniform1f(GU.uHigh, st.high);
+    gl.uniform1f(GU.uMorph, st.morph);
+    if (!rt) { gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0); return; } // light theme
+
+    // Dark: scene into a float target (additive), then bloom and composite onto the background.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.scene.fbo);
+    gl.viewport(0, 0, rt.scene.w, rt.scene.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0);
+
+    gl.disable(gl.BLEND);
+    gl.useProgram(blurProg);
+    gl.bindVertexArray(postVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(BU.tex, 0);
+    blurPass(rt.scene, rt.a, 0, 0);   // downsample
+    blurPass(rt.a, rt.b, 1, 0); blurPass(rt.b, rt.a, 0, 1);
+    blurPass(rt.a, rt.b, 2.5, 0); blurPass(rt.b, rt.a, 0, 2.5);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, out);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(compProg);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, rt.scene.tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, rt.a.tex);
+    gl.uniform1i(CU.scene, 0); gl.uniform1i(CU.bloom, 1);
+    gl.uniform3f(CU.bg, bg[0], bg[1], bg[2]);
+    gl.uniform1f(CU.glow, 0.6);
+    gl.uniform1f(CU.sat, GLASS_SAT);
+    gl.uniform1f(CU.flip, flipY ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.enable(gl.BLEND);
+    gl.clearColor(0.027, 0.043, 0.078, 1); // dark clear colour for the next frame (blend stays ONE, ONE)
+  }
+
+  const DARK_BG = [0.027, 0.043, 0.078];
   function drawGlass(dt, speed) {
     const target = stateChoice === 'thinking' ? 1 : 0;
     const step = reduceMotion ? 1 : dt / MORPH_SECS;
@@ -858,50 +978,16 @@
     const pace = 1 + 0.35 * m * (Math.sin(tt * 0.53) * 0.6 + Math.sin(tt * 1.37 + 0.8) * 0.4);
     spin += dt * speed * (0.18 + 0.3 * live.level) * (1 + 1.6 * m) * pace;
     flow += dt * speed * (0.35 + 0.9 * m) * (2 - pace);
-    gl.useProgram(gprog);
-    gl.bindVertexArray(gvao);
-    gl.uniform1f(GU.uTime, motionTime);
-    gl.uniform1f(GU.uLevel, live.level);
-    gl.uniform1f(GU.uBass, live.bass);
-    gl.uniform1f(GU.uHigh, live.high);
-    gl.uniform1f(GU.uMorph, m);
-    gl.uniform1f(GU.uSpin, spin);
-    gl.uniform1f(GU.uFlow, flow);
-    if (isLight) { gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0); return; }
-
-    // Dark: scene into a float target (additive), then bloom and composite onto the background.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, rtScene.fbo);
-    gl.viewport(0, 0, rtScene.w, rtScene.h);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.blendFunc(gl.ONE, gl.ONE);
-    gl.drawElements(gl.TRIANGLES, G_COUNT, gl.UNSIGNED_SHORT, 0);
-
-    gl.disable(gl.BLEND);
-    gl.useProgram(blurProg);
-    gl.bindVertexArray(postVao);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.uniform1i(BU.tex, 0);
-    blurPass(rtScene, rtA, 0, 0);   // downsample
-    blurPass(rtA, rtB, 1, 0); blurPass(rtB, rtA, 0, 1);
-    blurPass(rtA, rtB, 2.5, 0); blurPass(rtB, rtA, 0, 2.5);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.useProgram(compProg);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, rtScene.tex);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, rtA.tex);
-    gl.uniform1i(CU.scene, 0); gl.uniform1i(CU.bloom, 1);
-    gl.uniform3f(CU.bg, 0.027, 0.043, 0.078);
-    gl.uniform1f(CU.glow, 0.6);
-    gl.uniform1f(CU.sat, GLASS_SAT);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.enable(gl.BLEND);
-    gl.clearColor(0.027, 0.043, 0.078, 1); // dark clear colour for the next frame (blend stays ONE, ONE)
+    // Live, both clock sets are the same clock.
+    const st = { timeL: motionTime, timeT: motionTime, spinL: spin, spinT: spin, flowL: flow, flowT: flow,
+                 level: live.level, bass: live.bass, high: live.high, morph: m, fit: liveFit };
+    if (isLight) { gl.useProgram(gprog); gl.uniform1f(GU.uLight, 1); renderGlass(st, null); return; }
+    renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
 
+  let exporting = false;
   function frame(now) {
+    if (exporting) { last = now; requestAnimationFrame(frame); return; }
     const t = (now - start) / 1000;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
@@ -933,6 +1019,116 @@
     gl.uniform1f(U.uPass, 1); gl.drawArrays(gl.POINTS, 0, COUNT); // halo
     gl.uniform1f(U.uPass, 0); gl.drawArrays(gl.POINTS, 0, COUNT); // crisp lines
   }
+
+  // ---- Loop export: Listening -> Thinking -> Listening, rendered offline frame by frame, MP4 on pure black ----
+  // Seamless because every input is periodic over the loop: the morph and the voice are periodic by construction,
+  // the Listening clocks rewind in the middle of the Thinking hold (Listening is fully hidden there), and the
+  // Thinking clocks restart at the loop seam (Thinking is fully hidden there). Frame N would equal frame 0.
+  function loopState(t, L, speed) {
+    const M = MORPH_SECS, hold = (L - 2 * M) / 2;      // Listening total = Thinking hold
+    const t1 = hold / 2, t2 = t1 + M, t3 = t2 + hold, t4 = t3 + M, tMid = (t2 + t3) / 2;
+    const ease = x => x * x * (3 - 2 * x);
+    const morph = t < t1 ? 0 : t < t2 ? ease((t - t1) / M) : t < t3 ? 1 : t < t4 ? ease(1 - (t - t3) / M) : 0;
+    const lc = (t < tMid ? t : t - L) * speed, tc = (t - tMid) * speed;
+    // A gentle, periodic "voice" while listening (whole cycles per loop, so it lines up at the seam).
+    const TAU = Math.PI * 2, k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
+    const v = (1 - morph) * 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * t / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * t / L + 1.3));
+    return { timeL: lc, spinL: 0.18 * lc, flowL: 0.35 * lc,
+             timeT: tc, spinT: 0.468 * tc, flowT: 1.25 * tc,
+             level: v, bass: v * 0.9, high: v * 0.7, morph, fit: [0.6, 0.6] };
+  }
+
+  async function exportLoop({ size, fps, length }, onProgress) {
+    const MB = await import('./vendor/mediabunny.min.mjs');
+    const W = size, H = size, N = Math.round(length * fps), L = N / fps;
+    const speed = Number(speedInput.value);
+    const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9'], { width: W, height: H });
+    if (!codec) throw new Error('This browser cannot encode video. Try Chrome or Edge.');
+    const isMp4 = codec === 'avc';
+    const target = new MB.BufferTarget();
+    const output = new MB.Output({
+      format: isMp4 ? new MB.Mp4OutputFormat({ fastStart: 'in-memory' }) : new MB.WebMOutputFormat(),
+      target,
+    });
+    // One key frame per loop: every key frame resets compression drift, which reads as a faint pulse in calm stretches.
+    // Generous bitrate: soft glow gradients band and shimmer at ordinary rates (~0.3 bits per pixel).
+    const quality = new MB.Quality({ bitrate: Math.round(W * H * fps * 0.3) });
+    const source = new MB.VideoSampleSource({ codec, quality, keyFrameInterval: L });
+    output.addVideoTrack(source, { frameRate: fps });
+    await output.start();
+
+    const rt = { scene: makeTarget(W, H), a: makeTarget(W >> 2, H >> 2), b: makeTarget(W >> 2, H >> 2) };
+    const out = makeTarget(W, H, true);
+    const pixels = new Uint8Array(W * H * 4);
+    try {
+      gl.useProgram(gprog);
+      gl.uniform1f(GU.uLight, 0); // always the dark (bloom) look
+      for (let k = 0; k < N; k++) {
+        renderGlass(loopState(k / fps, L, speed), rt, out.fbo, W, H, [0, 0, 0], true);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const sample = new MB.VideoSample(pixels, { format: 'RGBA', codedWidth: W, codedHeight: H, timestamp: k / fps, duration: 1 / fps });
+        await source.add(sample);
+        sample.close();
+        onProgress((k + 1) / N);
+      }
+      await output.finalize();
+    } catch (err) {
+      if (output.state !== 'finalized') await output.cancel().catch(() => {});
+      throw err;
+    } finally {
+      [rt.scene, rt.a, rt.b, out].forEach(freeTarget);
+    }
+    return { blob: new Blob([target.buffer], { type: isMp4 ? 'video/mp4' : 'video/webm' }), ext: isMp4 ? 'mp4' : 'webm' };
+  }
+
+  const exportDlg = document.getElementById('exportDlg');
+  const exportGo = document.getElementById('exportGo');
+  const exportProg = document.getElementById('exportProg');
+  const exportMsg = document.getElementById('exportMsg');
+  const exportOpts = { size: 1080, fps: 60, length: 8 };
+  [['size', 'exportSize'], ['fps', 'exportFps'], ['length', 'exportLen']].forEach(([key, attr]) => {
+    const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
+    btns.forEach(b => b.addEventListener('click', () => {
+      exportOpts[key] = Number(b.dataset[attr]);
+      btns.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+  });
+  document.getElementById('exportBtn').addEventListener('click', () => { exportMsg.textContent = ''; exportDlg.showModal(); });
+  document.getElementById('exportClose').addEventListener('click', () => exportDlg.close());
+  exportDlg.addEventListener('cancel', e => { if (exporting) e.preventDefault(); });
+  exportGo.addEventListener('click', async () => {
+    exporting = true;
+    exportGo.disabled = true;
+    document.getElementById('exportClose').disabled = true;
+    exportProg.hidden = false; exportProg.value = 0;
+    exportMsg.textContent = 'Rendering…';
+    document.body.classList.add('rendering');
+    const t0 = performance.now();
+    try {
+      const { blob, ext } = await exportLoop(exportOpts, p => {
+        exportProg.value = p;
+        exportMsg.textContent = 'Rendering… ' + Math.round(p * 100) + '%';
+      });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `voice-orb-glass-loop-${exportOpts.size}p${exportOpts.fps}-${exportOpts.length}s.${ext}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      exportMsg.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(blob.size / 1048576).toFixed(1)} MB` + (ext === 'webm' ? ' · WebM (MP4 not available here)' : '');
+    } catch (err) {
+      exportMsg.textContent = 'Export failed: ' + (err && err.message ? err.message : err);
+    } finally {
+      document.body.classList.remove('rendering');
+      exporting = false;
+      exportGo.disabled = false;
+      document.getElementById('exportClose').disabled = false;
+      exportProg.hidden = true;
+      resize();
+      applyTheme(); // restores the theme's blend mode and clear colour
+    }
+  });
   requestAnimationFrame(frame);
 })();
 </script>
