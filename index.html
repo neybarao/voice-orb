@@ -180,12 +180,12 @@
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
-  <button class="file" id="exportBtn" type="button" hidden>Export video</button>
+  <button class="file" id="exportBtn" type="button">Export video</button>
   <div class="theme" role="group" aria-label="Orb style">
     <button type="button" data-style-choice="dots" aria-pressed="true">Dots</button>
     <button type="button" data-style-choice="glass" aria-pressed="false">Glass</button>
   </div>
-  <div class="theme" id="stateGroup" role="group" aria-label="Glass state" hidden>
+  <div class="theme" id="stateGroup" role="group" aria-label="Orb state">
     <button type="button" data-state-choice="listening" aria-pressed="true">Listening</button>
     <button type="button" data-state-choice="thinking" aria-pressed="false">Thinking</button>
   </div>
@@ -253,7 +253,9 @@
   const vs = `#version 300 es
   precision highp float;
   layout(location=0) in vec2 aUV;
-  uniform float uTime, uLevel, uBass, uMid, uHigh, uRot, uPass, uDpr, uLight;
+  // Same clock split as the glass orb: *L for Listening (sphere), *T for Thinking (ring).
+  uniform float uTimeL, uTimeT, uRotL, uSpinT, uFlowT, uMorph;
+  uniform float uLevel, uBass, uMid, uHigh, uPass, uDpr, uLight;
   uniform vec2 uFit;
   out vec3 vColor;
   out float vAlpha;
@@ -283,15 +285,18 @@
     return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
   }
 
+  vec3 rotX(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+
   void main(){
     float theta = aUV.x * 6.2831853;
     float phi = aUV.y * 3.1415926;
     vec3 dir = vec3(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta));
+    float m = uMorph, listen = 1.0 - m;
 
+    // ---- Listening: the sphere of meridian strands (driven by the *L clocks) ----
     float topW = smoothstep(-0.2, 1.0, dir.y);
     float botW = smoothstep(0.2, -1.0, dir.y);
-    float t = uTime;
-
+    float t = uTimeL;
     // Slow base wobble plus finer ripples; audio bands scale them by region.
     float n1 = snoise(dir * 1.5 + vec3(0.0, t * 0.22, t * 0.1));
     float n2 = snoise(dir * 4.2 + vec3(t * 0.5, 0.0, -t * 0.35));
@@ -300,20 +305,41 @@
     float fine = 0.012 + 0.10 * uHigh * (0.4 + topW);
     float r = 1.0 + amp * (0.65 * n1 + 0.35 * n2) + fine * n3 + 0.06 * uLevel;
     vec3 p = dir * r;
-
     // Spin around Y, slight tilt toward the camera.
-    float c = cos(uRot), s = sin(uRot);
+    float c = cos(uRotL), s = sin(uRotL);
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
     vec3 nrm = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
-    float ct = cos(0.28), st = sin(0.28);
-    p = vec3(p.x, ct * p.y - st * p.z, st * p.y + ct * p.z);
-    nrm = vec3(nrm.x, ct * nrm.y - st * nrm.z, st * nrm.y + ct * nrm.z);
+    p = rotX(p, 0.28);
+    nrm = rotX(nrm, 0.28);
+
+    // ---- Thinking: the same dots wrap a ring facing the camera (driven by the *T clocks) ----
+    // Each meridian becomes one coil around the tube; the coils slide around it and the ring turns slowly.
+    float tt = uTimeT;
+    float al = 3.1415926 - 2.0 * phi + uFlowT;
+    float th = theta + uSpinT * 0.3 + 0.16 * (phi - 1.5707963); // a slight twist: each coil leans like a rope strand
+    float rt = 0.22 * (1.0 + 0.14 * snoise(vec3(cos(theta) * 0.9, sin(theta) * 0.9, tt * 0.25)));
+    vec3 tn = vec3(cos(al) * cos(th), cos(al) * sin(th), sin(al));
+    vec3 tp = vec3(0.74 * cos(th), 0.74 * sin(th), 0.0) + rt * tn;
+    float breath = (sin(tt * 1.7) + 0.6 * sin(tt * 2.93 + 1.3) + 0.35 * sin(tt * 0.71 + 2.1)) / 1.95;
+    float wob = snoise(tp * 0.55 + vec3(tt * 0.2, -tt * 0.15, tt * 0.17));
+    tp *= 1.0 + 0.02 * breath + 0.04 * wob;
+    tp = rotX(tp, 0.12);
+    tn = rotX(tn, 0.12);
+
+    // ---- Blend: dots fly from one layout to the other, scattering a little mid-way like a flock ----
+    vec3 q = mix(p, tp, m);
+    float sc = 0.22 * sin(3.1415926 * m);
+    q += sc * vec3(snoise(dir * 1.7 + vec3(t * 0.3, 0.0, 0.0)),
+                   snoise(dir * 1.7 + vec3(0.0, 17.0, t * 0.3)),
+                   snoise(dir * 1.7 + vec3(31.0, t * 0.3, 0.0)));
+    p = q;
 
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
 
-    // Fresnel: bright at the silhouette, almost clear through the middle.
-    float rim = 1.0 - abs(nrm.z);
+    // Fresnel: bright at the silhouette, almost clear through the middle. Blended as a value (normals can cancel).
+    float rim = mix(1.0 - abs(nrm.z), 1.0 - abs(tn.z), m);
+    rim *= 1.0 - 0.3 * sin(3.1415926 * m); // a little calmer while scattered
     float edge = pow(rim, 2.6);
 
     // Screen-fixed gradient: warm on top, cool at the bottom.
@@ -324,7 +350,7 @@
     vec3 hot = mix(vec3(1.0, 0.94, 0.9), col * 0.62, uLight);
     col = mix(col, hot, pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
 
-    float a = 0.12 + 0.88 * edge + 0.2 * uLevel * edge;
+    float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
     gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
@@ -365,14 +391,14 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTime','uLevel','uBass','uMid','uHigh','uRot','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
   // Thinking  = glass ring made of three thick tubes, slightly offset from each other.
   // uMorph blends sphere -> ring; mid-way the ribbons fade and the shell turns into a soft blob.
   // In dark theme the scene renders to a float target and gets a quarter-res bloom.
-  const NOISE_GLSL = vs.slice(vs.indexOf('vec3 mod289'), vs.indexOf('void main'));
+  const NOISE_GLSL = vs.slice(vs.indexOf('vec3 mod289'), vs.indexOf('vec3 rotX'));
   const RIBBONS = 3, RIB_ALONG = 320, RIB_ACROSS = 24, SH_U = 160, SH_V = 80;
   const gvs = `#version 300 es
   precision highp float;
@@ -663,15 +689,14 @@
   const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
   let themeChoice = 'auto';
   let styleChoice = 'dots';      // 'dots' | 'glass'
-  let stateChoice = 'listening'; // glass only: 'listening' | 'thinking'
+  let stateChoice = 'listening'; // 'listening' | 'thinking' (both styles)
   const styleButtons = document.querySelectorAll('[data-style-choice]');
   const stateButtons = document.querySelectorAll('[data-state-choice]');
   const stateGroup = document.getElementById('stateGroup');
   function applyStyle() {
     styleButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.styleChoice === styleChoice)));
     stateButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.stateChoice === stateChoice)));
-    stateGroup.hidden = styleChoice !== 'glass';
-    document.getElementById('exportBtn').hidden = styleChoice !== 'glass';
+
   }
   function resolvedTheme() {
     if (themeChoice !== 'auto') return themeChoice;
@@ -711,9 +736,6 @@
     const s = 0.6 * Number(sizeInput.value);
     const fit = w > h ? [s * h / w, s] : [s, s * w / h];
     liveFit = fit;
-    gl.useProgram(prog);
-    gl.uniform2f(U.uFit, fit[0], fit[1]);
-    gl.uniform1f(U.uDpr, dpr);
   }
   window.addEventListener('resize', resize);
   resize();
@@ -732,7 +754,7 @@
     for (const k in controls) q.set(k, Number(controls[k].value).toString());
     q.set('theme', themeChoice);
     q.set('orb', styleChoice);
-    if (styleChoice === 'glass') q.set('state', stateChoice);
+    q.set('state', stateChoice);
     return q;
   }
   function shareUrl() { return location.origin + location.pathname + '?' + currentParams().toString(); }
@@ -968,7 +990,8 @@
   }
 
   const DARK_BG = [0.027, 0.043, 0.078];
-  function drawGlass(dt, speed) {
+  // Shared by both styles: eased morph 0 (Listening) -> 1 (Thinking), plus the Thinking spin/flow clocks.
+  function advanceMorph(dt, speed) {
     const target = stateChoice === 'thinking' ? 1 : 0;
     const step = reduceMotion ? 1 : dt / MORPH_SECS;
     morphP += Math.max(-step, Math.min(step, target - morphP));
@@ -978,6 +1001,10 @@
     const pace = 1 + 0.35 * m * (Math.sin(tt * 0.53) * 0.6 + Math.sin(tt * 1.37 + 0.8) * 0.4);
     spin += dt * speed * (0.18 + 0.3 * live.level) * (1 + 1.6 * m) * pace;
     flow += dt * speed * (0.35 + 0.9 * m) * (2 - pace);
+    return m;
+  }
+
+  function drawGlass(m) {
     // Live, both clock sets are the same clock.
     const st = { timeL: motionTime, timeT: motionTime, spinL: spin, spinT: spin, flowL: flow, flowT: flow,
                  level: live.level, bass: live.bass, high: live.high, morph: m, fit: liveFit };
@@ -997,27 +1024,34 @@
     rot += dt * speed * (0.12 + live.level * 0.25);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (styleChoice === 'glass') {
-      drawGlass(dt, speed);
-    } else {
-      gl.useProgram(prog);
-      gl.bindVertexArray(vao);
-      drawDots();
-    }
+    const m = advanceMorph(dt, speed);
+    if (styleChoice === 'glass') drawGlass(m);
+    else renderDots({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
+                      level: live.level, bass: live.bass, mid: live.mid, high: live.high, fit: liveFit },
+                    null, canvas.width, canvas.height, dpr);
     const vals = [live.bass, live.mid, live.high, live.level];
     bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
     requestAnimationFrame(frame);
   }
 
-  function drawDots() {
-    gl.uniform1f(U.uTime, motionTime);
-    gl.uniform1f(U.uLevel, live.level);
-    gl.uniform1f(U.uBass, live.bass);
-    gl.uniform1f(U.uMid, live.mid);
-    gl.uniform1f(U.uHigh, live.high);
-    gl.uniform1f(U.uRot, rot);
+  // One dots frame into `out` (null = screen). Point sizes are in pixels, so `pointScale` keeps them in proportion.
+  function renderDots(st, out, w, h, pointScale) {
+    gl.useProgram(prog);
+    gl.bindVertexArray(vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, out);
+    gl.viewport(0, 0, w, h);
+    gl.uniform1f(U.uTimeL, st.timeL); gl.uniform1f(U.uTimeT, st.timeT);
+    gl.uniform1f(U.uRotL, st.rotL); gl.uniform1f(U.uSpinT, st.spinT); gl.uniform1f(U.uFlowT, st.flowT);
+    gl.uniform1f(U.uMorph, st.morph);
+    gl.uniform1f(U.uLevel, st.level);
+    gl.uniform1f(U.uBass, st.bass);
+    gl.uniform1f(U.uMid, st.mid);
+    gl.uniform1f(U.uHigh, st.high);
+    gl.uniform2f(U.uFit, st.fit[0], st.fit[1]);
+    gl.uniform1f(U.uDpr, pointScale);
     gl.uniform1f(U.uPass, 1); gl.drawArrays(gl.POINTS, 0, COUNT); // halo
     gl.uniform1f(U.uPass, 0); gl.drawArrays(gl.POINTS, 0, COUNT); // crisp lines
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   // ---- Loop export: Listening -> Thinking -> Listening, rendered offline frame by frame, MP4 on pure black ----
@@ -1033,12 +1067,12 @@
     // A gentle, periodic "voice" while listening (whole cycles per loop, so it lines up at the seam).
     const TAU = Math.PI * 2, k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
     const v = (1 - morph) * 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * t / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * t / L + 1.3));
-    return { timeL: lc, spinL: 0.18 * lc, flowL: 0.35 * lc,
+    return { timeL: lc, spinL: 0.18 * lc, flowL: 0.35 * lc, rotL: 0.12 * lc,
              timeT: tc, spinT: 0.468 * tc, flowT: 1.25 * tc,
-             level: v, bass: v * 0.9, high: v * 0.7, morph, fit: [0.6, 0.6] };
+             level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
   }
 
-  async function exportLoop({ size, fps, length }, onProgress) {
+  async function exportLoop({ size, fps, length }, style, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
     const W = size, H = size, N = Math.round(length * fps), L = N / fps;
     const speed = Number(speedInput.value);
@@ -1061,10 +1095,23 @@
     const out = makeTarget(W, H, true);
     const pixels = new Uint8Array(W * H * 4);
     try {
-      gl.useProgram(gprog);
-      gl.uniform1f(GU.uLight, 0); // always the dark (bloom) look
+      // Always the dark look, on pure black.
+      gl.useProgram(gprog); gl.uniform1f(GU.uLight, 0);
+      gl.useProgram(prog); gl.uniform1f(U.uLight, 0);
       for (let k = 0; k < N; k++) {
-        renderGlass(loopState(k / fps, L, speed), rt, out.fbo, W, H, [0, 0, 0], true);
+        const st = loopState(k / fps, L, speed);
+        if (style === 'glass') {
+          renderGlass(st, rt, out.fbo, W, H, [0, 0, 0], true);
+        } else {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
+          gl.viewport(0, 0, W, H);
+          gl.clearColor(0, 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE);
+          st.fit = [0.6, -0.6]; // flipped, so readPixels comes out top-down
+          renderDots(st, out.fbo, W, H, W / 800);
+        }
         gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
         gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1107,13 +1154,14 @@
     document.body.classList.add('rendering');
     const t0 = performance.now();
     try {
-      const { blob, ext } = await exportLoop(exportOpts, p => {
+      const style = styleChoice;
+      const { blob, ext } = await exportLoop(exportOpts, style, p => {
         exportProg.value = p;
         exportMsg.textContent = 'Rendering… ' + Math.round(p * 100) + '%';
       });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `voice-orb-glass-loop-${exportOpts.size}p${exportOpts.fps}-${exportOpts.length}s.${ext}`;
+      a.download = `voice-orb-${style}-loop-${exportOpts.size}p${exportOpts.fps}-${exportOpts.length}s.${ext}`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
       exportMsg.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(blob.size / 1048576).toFixed(1)} MB` + (ext === 'webm' ? ' · WebM (MP4 not available here)' : '');
