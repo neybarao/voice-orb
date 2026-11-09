@@ -203,7 +203,13 @@
 
 <dialog class="export" id="exportDlg" aria-labelledby="exportTitle">
   <h2 id="exportTitle">Export loop video</h2>
-  <p>Listening → Thinking → Listening, seamless loop. MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.</p>
+  <p id="exportHint">Listening → Thinking → Listening, seamless loop.</p>
+  <div class="row"><span>Background</span>
+    <div class="theme" role="group" aria-label="Background">
+      <button type="button" data-export-bg="0" aria-pressed="true">Black</button>
+      <button type="button" data-export-bg="1" aria-pressed="false">White</button>
+    </div>
+  </div>
   <div class="row"><span>Size</span>
     <div class="theme" role="group" aria-label="Video size">
       <button type="button" data-export-size="720" aria-pressed="false">720</button>
@@ -1080,7 +1086,7 @@
              level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
   }
 
-  async function exportLoop({ size, fps, length, dot }, style, onProgress) {
+  async function exportLoop({ size, fps, length, dot, bg }, style, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
     const W = size, H = size, N = Math.round(length * fps), L = N / fps;
     const speed = Number(speedInput.value);
@@ -1103,12 +1109,24 @@
     const out = makeTarget(W, H, true);
     const pixels = new Uint8Array(W * H * 4);
     try {
-      // Always the dark look, on pure black.
-      gl.useProgram(gprog); gl.uniform1f(GU.uLight, 0);
-      gl.useProgram(prog); gl.uniform1f(U.uLight, 0);
+      // Black: the dark look (additive glow, bloom). White: the light-theme look on pure white.
+      const white = bg === 1;
+      gl.useProgram(gprog); gl.uniform1f(GU.uLight, white ? 1 : 0);
+      gl.useProgram(prog); gl.uniform1f(U.uLight, white ? 1 : 0);
       for (let k = 0; k < N; k++) {
         const st = loopState(k / fps, L, speed);
-        if (style === 'glass') {
+        if (white) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
+          gl.viewport(0, 0, W, H);
+          gl.clearColor(1, 1, 1, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+          st.fit = [0.6, -0.6]; // flipped, so readPixels comes out top-down
+          if (style === 'glass') renderGlass(st, null);
+          else renderDots(st, out.fbo, W, H, W / 800 * dot);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        } else if (style === 'glass') {
           renderGlass(st, rt, out.fbo, W, H, [0, 0, 0], true);
         } else {
           gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
@@ -1144,11 +1162,19 @@
   const exportGo = document.getElementById('exportGo');
   const exportProg = document.getElementById('exportProg');
   const exportMsg = document.getElementById('exportMsg');
-  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2 };
-  [['size', 'exportSize'], ['fps', 'exportFps'], ['length', 'exportLen'], ['dot', 'exportDot']].forEach(([key, attr]) => {
+  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0 };
+  const exportHint = document.getElementById('exportHint');
+  function updateExportHint() {
+    exportHint.textContent = 'Listening → Thinking → Listening, seamless loop. ' + (exportOpts.bg === 1
+      ? 'MP4 on pure white: in Figma set the layer blend mode to Multiply and the white disappears.'
+      : 'MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.');
+  }
+  updateExportHint();
+  [['size', 'exportSize'], ['fps', 'exportFps'], ['length', 'exportLen'], ['dot', 'exportDot'], ['bg', 'exportBg']].forEach(([key, attr]) => {
     const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
     btns.forEach(b => b.addEventListener('click', () => {
       exportOpts[key] = Number(b.dataset[attr]);
+      updateExportHint();
       btns.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     }));
   });
@@ -1175,7 +1201,7 @@
       });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      const dotTag = style === 'dots' ? `-dots${exportOpts.dot}x` : '';
+      const dotTag = (style === 'dots' ? `-dots${exportOpts.dot}x` : '') + (exportOpts.bg === 1 ? '-white' : '');
       a.download = `voice-orb-${style}-loop-${exportOpts.size}p${exportOpts.fps}-${exportOpts.length}s${dotTag}.${ext}`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
