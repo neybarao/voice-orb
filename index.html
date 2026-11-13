@@ -162,6 +162,9 @@
   .export output { display: block; min-height: 1.4em; margin-top: 6px; font: 11px/1.4 var(--font-data); color: var(--muted); }
   .rendering #stage { visibility: hidden; }
   .export .row[hidden] { display: none; }
+  .export .row.stack { flex-direction: column; align-items: stretch; gap: 6px; }
+  .export .row.stack .theme { display: flex; }
+  .export .row.stack .theme button { flex: 1 1 auto; padding-inline: 6px; }
 </style>
 </head>
 <body>
@@ -202,8 +205,23 @@
 </div>
 
 <dialog class="export" id="exportDlg" aria-labelledby="exportTitle">
-  <h2 id="exportTitle">Export loop video</h2>
+  <h2 id="exportTitle">Export video</h2>
   <p id="exportHint">Listening → Thinking → Listening, seamless loop.</p>
+  <div class="row stack"><span>Clip</span>
+    <div class="theme" role="group" aria-label="Clip">
+      <button type="button" data-export-clip="loop" aria-pressed="true">Full loop</button>
+      <button type="button" data-export-clip="listening" aria-pressed="false">Listening</button>
+      <button type="button" data-export-clip="transition" aria-pressed="false">Transition</button>
+      <button type="button" data-export-clip="thinking" aria-pressed="false">Thinking</button>
+      <button type="button" data-export-clip="all" aria-pressed="false">All</button>
+    </div>
+  </div>
+  <div class="row" id="exportDirRow" hidden><span>Direction</span>
+    <div class="theme" role="group" aria-label="Transition direction">
+      <button type="button" data-export-dir="toThinking" aria-pressed="true">To Thinking</button>
+      <button type="button" data-export-dir="toListening" aria-pressed="false">To Listening</button>
+    </div>
+  </div>
   <div class="row"><span>Background</span>
     <div class="theme" role="group" aria-label="Background">
       <button type="button" data-export-bg="0" aria-pressed="true">Black</button>
@@ -223,7 +241,7 @@
       <button type="button" data-export-fps="60" aria-pressed="true">60</button>
     </div>
   </div>
-  <div class="row"><span>Loop length</span>
+  <div class="row" id="exportLenRow"><span>Loop length</span>
     <div class="theme" role="group" aria-label="Loop length">
       <button type="button" data-export-len="6" aria-pressed="false">6 s</button>
       <button type="button" data-export-len="8" aria-pressed="true">8 s</button>
@@ -264,12 +282,29 @@
     }
   }
 
+  // Clip loops. Live, a noise field slides in a straight line (v * t) and the waves keep their own frequencies.
+  // In a clip export the same field travels a circle at the same speed that closes after P, and each wave snaps
+  // to a whole number of cycles per P, so the last frame leads straight back into the first.
+  const LOOP_GLSL = `
+  vec3 drift(vec3 v, float t, float P){
+    if (P <= 0.0) return v * t;
+    float a = 6.2831853 * t / P;
+    vec3 e = normalize(cross(v, vec3(0.37, 0.81, 0.45))) * length(v);
+    return (v * sin(a) + e * (1.0 - cos(a))) * (P / 6.2831853);
+  }
+  float wave(float f, float t, float ph, float P){
+    if (P > 0.0) f = max(1.0, floor(f * P / 6.2831853 + 0.5)) * 6.2831853 / P;
+    return sin(f * t + ph);
+  }`;
+
   const vs = `#version 300 es
   precision highp float;
   layout(location=0) in vec2 aUV;
   // Same clock split as the glass orb: *L for Listening (sphere), *T for Thinking (ring).
   uniform float uTimeL, uTimeT, uRotL, uSpinT, uFlowT, uMorph;
   uniform float uLevel, uBass, uMid, uHigh, uPass, uDpr, uLight;
+  // Clip export only: the period (in clock units) after which every motion repeats exactly. 0 = live / off.
+  uniform float uLoopP;
   uniform vec2 uFit;
   out vec3 vColor;
   out float vAlpha;
@@ -300,7 +335,7 @@
   }
 
   vec3 rotX(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
-
+  ${LOOP_GLSL}
   void main(){
     float theta = aUV.x * 6.2831853;
     float phi = aUV.y * 3.1415926;
@@ -311,16 +346,18 @@
     float topW = smoothstep(-0.2, 1.0, dir.y);
     float botW = smoothstep(0.2, -1.0, dir.y);
     float t = uTimeL;
+    float c = cos(uRotL), s = sin(uRotL);
+    // Clip loops sample the noise in world space, so turning by whole meridians brings back the exact same picture.
+    vec3 nd = uLoopP > 0.0 ? vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z) : dir;
     // Slow base wobble plus finer ripples; audio bands scale them by region.
-    float n1 = snoise(dir * 1.5 + vec3(0.0, t * 0.22, t * 0.1));
-    float n2 = snoise(dir * 4.2 + vec3(t * 0.5, 0.0, -t * 0.35));
-    float n3 = snoise(dir * 9.0 + vec3(0.0, -t * 0.9, t * 0.6));
+    float n1 = snoise(nd * 1.5 + drift(vec3(0.0, 0.22, 0.1), t, uLoopP));
+    float n2 = snoise(nd * 4.2 + drift(vec3(0.5, 0.0, -0.35), t, uLoopP));
+    float n3 = snoise(nd * 9.0 + drift(vec3(0.0, -0.9, 0.6), t, uLoopP));
     float amp = 0.035 + 0.16 * uLevel + 0.22 * uBass * botW + 0.10 * uMid;
     float fine = 0.012 + 0.10 * uHigh * (0.4 + topW);
     float r = 1.0 + amp * (0.65 * n1 + 0.35 * n2) + fine * n3 + 0.06 * uLevel;
     vec3 p = dir * r;
     // Spin around Y, slight tilt toward the camera.
-    float c = cos(uRotL), s = sin(uRotL);
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
     vec3 nrm = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
     p = rotX(p, 0.28);
@@ -331,11 +368,12 @@
     float tt = uTimeT;
     float al = 3.1415926 - 2.0 * phi + uFlowT;
     float th = theta + uSpinT * 0.3 + 0.16 * (phi - 1.5707963); // a slight twist: each coil leans like a rope strand
-    float rt = 0.22 * (1.0 + 0.14 * snoise(vec3(cos(theta) * 0.9, sin(theta) * 0.9, tt * 0.25)));
+    float thw = uLoopP > 0.0 ? theta + uSpinT * 0.3 : theta; // world angle in clip loops (same reason as above)
+    float rt = 0.22 * (1.0 + 0.14 * snoise(vec3(cos(thw) * 0.9, sin(thw) * 0.9, 0.0) + drift(vec3(0.0, 0.0, 0.25), tt, uLoopP)));
     vec3 tn = vec3(cos(al) * cos(th), cos(al) * sin(th), sin(al));
     vec3 tp = vec3(0.74 * cos(th), 0.74 * sin(th), 0.0) + rt * tn;
-    float breath = (sin(tt * 1.7) + 0.6 * sin(tt * 2.93 + 1.3) + 0.35 * sin(tt * 0.71 + 2.1)) / 1.95;
-    float wob = snoise(tp * 0.55 + vec3(tt * 0.2, -tt * 0.15, tt * 0.17));
+    float breath = (wave(1.7, tt, 0.0, uLoopP) + 0.6 * wave(2.93, tt, 1.3, uLoopP) + 0.35 * wave(0.71, tt, 2.1, uLoopP)) / 1.95;
+    float wob = snoise(tp * 0.55 + drift(vec3(0.2, -0.15, 0.17), tt, uLoopP));
     tp *= 1.0 + 0.02 * breath + 0.04 * wob;
     tp = rotX(tp, 0.12);
     tn = rotX(tn, 0.12);
@@ -405,7 +443,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -421,6 +459,7 @@
   // Live they tick together; the loop export rewinds each one while the other state fills the screen.
   uniform float uTimeL, uTimeT, uSpinL, uSpinT, uFlowL, uFlowT;
   uniform float uLevel, uBass, uHigh, uMorph, uBreak;
+  uniform float uLoopP, uLoopFT; // clip export: loop period of the time clocks and of uFlowT (0 = live / off)
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
@@ -431,6 +470,7 @@
   vec3 rotX(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
   vec3 rotY(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
   vec3 rotZ(vec3 p, float a){ float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
+  ${LOOP_GLSL}
 
   vec3 shellAt(vec2 q){
     float th = q.x * TAU, ph = clamp(q.y, 0.002, 0.998) * PI;
@@ -457,10 +497,10 @@
     // The three tubes braid: each one's centre circles inside the ring's cross-section once per lap.
     float a = w * PI;
     // Thickness swells and thins along each tube, drifting slowly.
-    float rr = (0.15 + 0.01 * i) * (1.0 + 0.1 * snoise(vec3(cos(s) * 0.9, sin(s) * 0.9, i * 2.7 + uTimeT * 0.28)));
+    float rr = (0.15 + 0.01 * i) * (1.0 + 0.1 * snoise(vec3(cos(s) * 0.9, sin(s) * 0.9, i * 2.7) + drift(vec3(0.0, 0.0, 0.28), uTimeT, uLoopP)));
     float ph = i * 2.094 + s + uFlowT;
     float th = s + uSpinT * 0.3;
-    float braid = 0.05 * (1.0 + 0.4 * snoise(vec3(cos(s) * 0.8, sin(s) * 0.8, i * 1.9 - uTimeT * 0.22)));
+    float braid = 0.05 * (1.0 + 0.4 * snoise(vec3(cos(s) * 0.8, sin(s) * 0.8, i * 1.9) + drift(vec3(0.0, 0.0, -0.22), uTimeT, uLoopP)));
     float R = 0.74 + braid * cos(ph);
     float z = braid * sin(ph);
     vec3 to = vec3((R + rr * cos(a)) * cos(th), (R + rr * cos(a)) * sin(th), z + rr * sin(a));
@@ -471,13 +511,13 @@
     vec3 p = k < -0.5 ? shellAt(q) : ribbonAt(q, k);
     float t = uTimeL, listen = 1.0 - uMorph;
     float blob = 0.012 * listen + 0.2 * sin(PI * uMorph) + (0.05 * uLevel + 0.05 * uBass) * listen;
-    float n1 = snoise(p * 0.7 + vec3(0.0, t * 0.3, t * 0.2));
-    float n2 = snoise(p * 2.6 + vec3(t * 0.5, 0.0, -t * 0.3));
+    float n1 = snoise(p * 0.7 + drift(vec3(0.0, 0.3, 0.2), t, uLoopP));
+    float n2 = snoise(p * 2.6 + drift(vec3(0.5, 0.0, -0.3), t, uLoopP));
     p *= 1.0 + blob * n1 + 0.01 * uHigh * n2 * listen + 0.04 * uLevel * listen;
     // Thinking: an uneven breath plus a slow liquid wobble of the whole ring.
     t = uTimeT;
-    float breath = (sin(t * 1.7) + 0.6 * sin(t * 2.93 + 1.3) + 0.35 * sin(t * 0.71 + 2.1)) / 1.95;
-    float wob = snoise(p * 0.55 + vec3(t * 0.2, -t * 0.15, t * 0.17));
+    float breath = (wave(1.7, t, 0.0, uLoopP) + 0.6 * wave(2.93, t, 1.3, uLoopP) + 0.35 * wave(0.71, t, 2.1, uLoopP)) / 1.95;
+    float wob = snoise(p * 0.55 + drift(vec3(0.2, -0.15, 0.17), t, uLoopP));
     p *= 1.0 + (0.02 * breath + 0.04 * wob) * uMorph;
     return rotX(p, mix(0.0, 0.12, uMorph));
   }
@@ -514,7 +554,7 @@
     vGapA = mix(1.0, ga, uBreak);
     vGapB = mix(1.0, gb, uBreak);
     // Thinking tubes: same idea on their bright rims; cos(around-tube) makes inner and outer rims break differently.
-    float gt = smoothstep(-0.25, 0.35, snoise(cp * 1.4 + vec3(cos(q.y * PI) * 1.2, 2.1, uFlowT * 0.25)));
+    float gt = smoothstep(-0.25, 0.35, snoise(cp * 1.4 + vec3(cos(q.y * PI) * 1.2, 2.1, 0.0) + drift(vec3(0.0, 0.0, 0.25), uFlowT, uLoopFT)));
     vGapT = mix(1.0, gt, uBreak);
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
@@ -612,7 +652,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -962,6 +1002,7 @@
     gl.uniform1f(GU.uTimeL, st.timeL); gl.uniform1f(GU.uTimeT, st.timeT);
     gl.uniform1f(GU.uSpinL, st.spinL); gl.uniform1f(GU.uSpinT, st.spinT);
     gl.uniform1f(GU.uFlowL, st.flowL); gl.uniform1f(GU.uFlowT, st.flowT);
+    gl.uniform1f(GU.uLoopP, st.loopP || 0); gl.uniform1f(GU.uLoopFT, st.loopFT || 0);
     gl.uniform1f(GU.uLevel, st.level);
     gl.uniform1f(GU.uBass, st.bass);
     gl.uniform1f(GU.uHigh, st.high);
@@ -1057,6 +1098,7 @@
     gl.uniform1f(U.uTimeL, st.timeL); gl.uniform1f(U.uTimeT, st.timeT);
     gl.uniform1f(U.uRotL, st.rotL); gl.uniform1f(U.uSpinT, st.spinT); gl.uniform1f(U.uFlowT, st.flowT);
     gl.uniform1f(U.uMorph, st.morph);
+    gl.uniform1f(U.uLoopP, st.loopP || 0);
     gl.uniform1f(U.uLevel, st.level);
     gl.uniform1f(U.uBass, st.bass);
     gl.uniform1f(U.uMid, st.mid);
@@ -1068,7 +1110,7 @@
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  // ---- Loop export: Listening -> Thinking -> Listening, rendered offline frame by frame, MP4 on pure black ----
+  // ---- Full loop export: Listening -> Thinking -> Listening, rendered offline frame by frame ----
   // Seamless because every input is periodic over the loop: the morph and the voice are periodic by construction,
   // the Listening clocks rewind in the middle of the Thinking hold (Listening is fully hidden there), and the
   // Thinking clocks restart at the loop seam (Thinking is fully hidden there). Frame N would equal frame 0.
@@ -1086,10 +1128,48 @@
              level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
   }
 
-  async function exportLoop({ size, fps, length, dot, bg }, style, onProgress) {
+  // ---- Stage clips: each state as its own seamless loop, plus the transitions between them ----
+  // The shaders run in clip-loop mode (uLoopP): noise travels closed circles and waves snap to whole cycles. Turns
+  // snap to whole meridians (dots) or rock gently (glass ribbons and tubes). So every clip repeats after L seconds.
+  // Transitions run the same clocks: frame 0 is the source loop's frame 0, and the frame after the last one is the
+  // target loop's frame 0. Listening, then the transition, then Thinking, plays without a jump at either cut.
+  // (Listening and Thinking must share the loop length and speed for that to hold.)
+  function clipState(clip, t, L, speed, style) {
+    const TAU = Math.PI * 2, M = MORPH_SECS, P = L * speed;
+    const ease = x => x * x * (3 - 2 * x);
+    let morph, tl, tt; // seconds on the Listening and Thinking clocks
+    if (clip === 'listening') { morph = 0; tl = t; tt = 0; }
+    else if (clip === 'thinking') { morph = 1; tl = 0; tt = t; }
+    else if (clip === 'toThinking') { morph = ease(t / M); tl = t; tt = t - M; }
+    else { morph = ease(1 - t / M); tl = t - M; tt = t; } // toListening
+    // The same gentle, periodic "voice" as the full loop (whole cycles per L), fading out as the ring forms.
+    const k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
+    const v = (1 - morph) * 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * tl / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * tl / L + 1.3));
+    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
+    if (P <= 0) return Object.assign(st, { timeL: 0, timeT: 0, rotL: 0, spinL: 0, flowL: 0, spinT: 0, flowT: 0, loopP: 0, loopFT: 0 });
+    const lc = tl * speed, tc = tt * speed;
+    const snap = (total, step, min = 0) => Math.max(min, Math.round(total / step)) * step;
+    const rock = (rate, c) => rate * P / TAU * Math.sin(TAU * c / P); // same top speed as the live drift, but closes
+    const DM = TAU / MERIDIANS;
+    const flowTotal = snap(1.25 * P, TAU, 1); // coils and braids slide a whole number of laps per loop
+    return Object.assign(st, {
+      timeL: lc, timeT: tc,
+      rotL: snap(0.12 * P, DM) / P * lc,
+      spinL: rock(0.18, lc), flowL: rock(0.35, lc),
+      spinT: style === 'dots' ? snap(0.468 * 0.3 * P, DM) / (0.3 * P) * tc : rock(0.468, tc),
+      flowT: flowTotal / P * tc,
+      loopP: P, loopFT: flowTotal,
+    });
+  }
+  const CLIP_TAG = { loop: 'loop', listening: 'listening', thinking: 'thinking', toThinking: 'to-thinking', toListening: 'to-listening' };
+
+  async function exportClip({ size, fps, length, dot, bg }, style, clip, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
-    const W = size, H = size, N = Math.round(length * fps), L = N / fps;
+    const W = size, H = size;
+    const isTransition = clip === 'toThinking' || clip === 'toListening';
+    const N = Math.round((isTransition ? MORPH_SECS : length) * fps), L = Math.round(length * fps) / fps;
     const speed = Number(speedInput.value);
+    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip, t, L, speed, style);
     const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9'], { width: W, height: H });
     if (!codec) throw new Error('This browser cannot encode video. Try Chrome or Edge.');
     const isMp4 = codec === 'avc';
@@ -1101,7 +1181,7 @@
     // One key frame per loop: every key frame resets compression drift, which reads as a faint pulse in calm stretches.
     // Generous bitrate: soft glow gradients band and shimmer at ordinary rates (~0.3 bits per pixel).
     const quality = new MB.Quality({ bitrate: Math.round(W * H * fps * 0.3) });
-    const source = new MB.VideoSampleSource({ codec, quality, keyFrameInterval: L });
+    const source = new MB.VideoSampleSource({ codec, quality, keyFrameInterval: N / fps });
     output.addVideoTrack(source, { frameRate: fps });
     await output.start();
 
@@ -1114,7 +1194,7 @@
       gl.useProgram(gprog); gl.uniform1f(GU.uLight, white ? 1 : 0);
       gl.useProgram(prog); gl.uniform1f(U.uLight, white ? 1 : 0);
       for (let k = 0; k < N; k++) {
-        const st = loopState(k / fps, L, speed);
+        const st = stateAt(k / fps);
         if (white) {
           gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo);
           gl.viewport(0, 0, W, H);
@@ -1162,14 +1242,31 @@
   const exportGo = document.getElementById('exportGo');
   const exportProg = document.getElementById('exportProg');
   const exportMsg = document.getElementById('exportMsg');
-  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0 };
+  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0, clip: 'loop', dir: 'toThinking' };
   const exportHint = document.getElementById('exportHint');
+  const CLIP_HINT = {
+    loop: 'Listening → Thinking → Listening, seamless loop.',
+    listening: 'Listening on its own, seamless loop.',
+    thinking: 'Thinking on its own, seamless loop.',
+    transition: 'One-shot morph (1.4 s). Its first frame matches the start of the source loop and it ends right where the target loop begins.',
+    all: 'Four files: Listening loop, To Thinking, Thinking loop, To Listening. They chain without jumps.',
+  };
   function updateExportHint() {
-    exportHint.textContent = 'Listening → Thinking → Listening, seamless loop. ' + (exportOpts.bg === 1
+    exportHint.textContent = CLIP_HINT[exportOpts.clip] + ' ' + (exportOpts.bg === 1
       ? 'MP4 on pure white: in Figma set the layer blend mode to Multiply and the white disappears.'
       : 'MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.');
+    document.getElementById('exportDirRow').hidden = exportOpts.clip !== 'transition';
+    document.getElementById('exportLenRow').hidden = exportOpts.clip === 'transition';
   }
   updateExportHint();
+  [['clip', 'exportClip'], ['dir', 'exportDir']].forEach(([key, attr]) => {
+    const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
+    btns.forEach(b => b.addEventListener('click', () => {
+      exportOpts[key] = b.dataset[attr];
+      updateExportHint();
+      btns.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+  });
   [['size', 'exportSize'], ['fps', 'exportFps'], ['length', 'exportLen'], ['dot', 'exportDot'], ['bg', 'exportBg']].forEach(([key, attr]) => {
     const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
     btns.forEach(b => b.addEventListener('click', () => {
@@ -1195,17 +1292,29 @@
     const t0 = performance.now();
     try {
       const style = styleChoice;
-      const { blob, ext } = await exportLoop(exportOpts, style, p => {
-        exportProg.value = p;
-        exportMsg.textContent = 'Rendering… ' + Math.round(p * 100) + '%';
-      });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      const dotTag = (style === 'dots' ? `-dots${exportOpts.dot}x` : '') + (exportOpts.bg === 1 ? '-white' : '');
-      a.download = `voice-orb-${style}-loop-${exportOpts.size}p${exportOpts.fps}-${exportOpts.length}s${dotTag}.${ext}`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-      exportMsg.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(blob.size / 1048576).toFixed(1)} MB` + (ext === 'webm' ? ' · WebM (MP4 not available here)' : '');
+      const o = exportOpts;
+      const clips = o.clip === 'all' ? ['listening', 'toThinking', 'thinking', 'toListening']
+                  : o.clip === 'transition' ? [o.dir] : [o.clip];
+      let bytes = 0, ext = 'mp4';
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
+        const label = clips.length > 1 ? ` ${i + 1}/${clips.length}` : '';
+        const res = await exportClip(o, style, clip, p => {
+          const all = (i + p) / clips.length;
+          exportProg.value = all;
+          exportMsg.textContent = `Rendering${label}… ` + Math.round(all * 100) + '%';
+        });
+        ext = res.ext; bytes += res.blob.size;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(res.blob);
+        const dotTag = (style === 'dots' ? `-dots${o.dot}x` : '') + (o.bg === 1 ? '-white' : '');
+        const len = clip === 'toThinking' || clip === 'toListening' ? MORPH_SECS : o.length;
+        a.download = `voice-orb-${style}-${CLIP_TAG[clip]}-${o.size}p${o.fps}-${len}s${dotTag}.${ext}`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      }
+      exportMsg.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(bytes / 1048576).toFixed(1)} MB`
+        + (clips.length > 1 ? ` · ${clips.length} files` : '') + (ext === 'webm' ? ' · WebM (MP4 not available here)' : '');
     } catch (err) {
       exportMsg.textContent = 'Export failed: ' + (err && err.message ? err.message : err);
     } finally {
