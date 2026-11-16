@@ -164,7 +164,8 @@
   .export .row[hidden] { display: none; }
   .export .row.stack { flex-direction: column; align-items: stretch; gap: 6px; }
   .export .row.stack .theme { display: flex; }
-  .export .row.stack .theme button { flex: 1 1 auto; padding-inline: 6px; }
+  .export .row.stack .theme { flex-wrap: wrap; }
+  .export .row.stack .theme button { flex: 1 1 30%; padding-inline: 6px; }
 </style>
 </head>
 <body>
@@ -190,7 +191,8 @@
     <button type="button" data-style-choice="glass" aria-pressed="false">Glass</button>
   </div>
   <div class="theme" id="stateGroup" role="group" aria-label="Orb state">
-    <button type="button" data-state-choice="listening" aria-pressed="true">Listening</button>
+    <button type="button" data-state-choice="idle" aria-pressed="true">Idle</button>
+    <button type="button" data-state-choice="speaking" aria-pressed="false">Speaking</button>
     <button type="button" data-state-choice="thinking" aria-pressed="false">Thinking</button>
   </div>
   <div class="theme" role="group" aria-label="Theme">
@@ -206,20 +208,29 @@
 
 <dialog class="export" id="exportDlg" aria-labelledby="exportTitle">
   <h2 id="exportTitle">Export video</h2>
-  <p id="exportHint">Listening → Thinking → Listening, seamless loop.</p>
+  <p id="exportHint"></p>
   <div class="row stack"><span>Clip</span>
     <div class="theme" role="group" aria-label="Clip">
-      <button type="button" data-export-clip="loop" aria-pressed="true">Full loop</button>
-      <button type="button" data-export-clip="listening" aria-pressed="false">Listening</button>
-      <button type="button" data-export-clip="transition" aria-pressed="false">Transition</button>
+      <button type="button" data-export-clip="idle" aria-pressed="true">Idle</button>
+      <button type="button" data-export-clip="speaking" aria-pressed="false">Speaking</button>
       <button type="button" data-export-clip="thinking" aria-pressed="false">Thinking</button>
-      <button type="button" data-export-clip="all" aria-pressed="false">All</button>
+      <button type="button" data-export-clip="transition" aria-pressed="false">Transition</button>
+      <button type="button" data-export-clip="all" aria-pressed="false">All 3 states</button>
+      <button type="button" data-export-clip="loop" aria-pressed="false">Full loop</button>
     </div>
   </div>
-  <div class="row" id="exportDirRow" hidden><span>Direction</span>
-    <div class="theme" role="group" aria-label="Transition direction">
-      <button type="button" data-export-dir="toThinking" aria-pressed="true">To Thinking</button>
-      <button type="button" data-export-dir="toListening" aria-pressed="false">To Listening</button>
+  <div class="row" id="exportFromRow" hidden><span>From</span>
+    <div class="theme" role="group" aria-label="Transition from">
+      <button type="button" data-export-from="idle" aria-pressed="true">Idle</button>
+      <button type="button" data-export-from="speaking" aria-pressed="false">Speaking</button>
+      <button type="button" data-export-from="thinking" aria-pressed="false">Thinking</button>
+    </div>
+  </div>
+  <div class="row" id="exportToRow" hidden><span>To</span>
+    <div class="theme" role="group" aria-label="Transition to">
+      <button type="button" data-export-to="idle" aria-pressed="false">Idle</button>
+      <button type="button" data-export-to="speaking" aria-pressed="true">Speaking</button>
+      <button type="button" data-export-to="thinking" aria-pressed="false">Thinking</button>
     </div>
   </div>
   <div class="row"><span>Background</span>
@@ -297,6 +308,23 @@
     return sin(f * t + ph);
   }`;
 
+  // Speaking: rings of sound roll out from the centre of the orb toward its edge, one per syllable. Each ring
+  // carries the loudness of the syllable that launched it, so the rings bunch and fade like speech.
+  // uSpeakT is the Speaking clock; the frequencies are uniforms so a clip export can snap them to whole cycles.
+  const SPEAK_GLSL = `
+  uniform float uSpeak, uSpeakT, uSpeakE, uSylF, uPhrF, uRingW;
+  float speechEnv(float s){
+    float syl = pow(abs(sin(3.1415926 * uSylF * s)), 1.6);
+    float ph = sin(6.2831853 * uPhrF * s) + 0.5 * sin(12.566371 * uPhrF * s + 1.7);
+    return syl * (0.3 + 0.7 * smoothstep(-0.9, 0.2, ph)); // short pauses that never go fully silent
+  }
+  // ang: angle from the point of the orb that faces the camera (0) to the far side (PI).
+  float speakRings(float ang){
+    const float K = 7.0;
+    float e = speechEnv(uSpeakT - ang * K / uRingW);
+    return sin(ang * K - uRingW * uSpeakT) * e;
+  }`;
+
   const vs = `#version 300 es
   precision highp float;
   layout(location=0) in vec2 aUV;
@@ -305,6 +333,7 @@
   uniform float uLevel, uBass, uMid, uHigh, uPass, uDpr, uLight;
   // Clip export only: the period (in clock units) after which every motion repeats exactly. 0 = live / off.
   uniform float uLoopP;
+  ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vColor;
   out float vAlpha;
@@ -362,6 +391,12 @@
     vec3 nrm = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
     p = rotX(p, 0.28);
     nrm = rotX(nrm, 0.28);
+    // Speaking: rings travel across the sphere from the side facing us, and the whole orb swells with each word.
+    float rip = 0.0;
+    if (uSpeak > 0.0) {
+      rip = speakRings(acos(clamp(nrm.z, -1.0, 1.0)));
+      p += nrm * uSpeak * (0.075 * rip + 0.06 * uSpeakE);
+    }
 
     // ---- Thinking: the same dots wrap a ring facing the camera (driven by the *T clocks) ----
     // Each meridian becomes one coil around the tube; the coils slide around it and the ring turns slowly.
@@ -403,6 +438,11 @@
     col = mix(col, hot, pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
 
     float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
+    if (uSpeak > 0.0) {
+      // Ring crests light up the dots they pass, so the waves read even face-on.
+      a *= 1.0 + uSpeak * listen * (0.5 * uSpeakE + 1.6 * max(0.0, rip));
+      col = mix(col, vec3(1.0, 0.95, 0.92), uSpeak * listen * (1.0 - uLight) * 0.35 * max(0.0, rip));
+    }
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
     gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
@@ -443,7 +483,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakT','uSpeakE','uSylF','uPhrF','uRingW'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -460,6 +500,7 @@
   uniform float uTimeL, uTimeT, uSpinL, uSpinT, uFlowL, uFlowT;
   uniform float uLevel, uBass, uHigh, uMorph, uBreak;
   uniform float uLoopP, uLoopFT; // clip export: loop period of the time clocks and of uFlowT (0 = live / off)
+  ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vN;
   out vec2 vS;
@@ -514,6 +555,11 @@
     float n1 = snoise(p * 0.7 + drift(vec3(0.0, 0.3, 0.2), t, uLoopP));
     float n2 = snoise(p * 2.6 + drift(vec3(0.5, 0.0, -0.3), t, uLoopP));
     p *= 1.0 + blob * n1 + 0.01 * uHigh * n2 * listen + 0.04 * uLevel * listen;
+    // Speaking: rings roll across the glass from the side facing us; the shell swells with each word.
+    if (uSpeak > 0.0) {
+      float rip = speakRings(acos(clamp(normalize(p).z, -1.0, 1.0)));
+      p *= 1.0 + uSpeak * listen * (0.05 * rip + 0.045 * uSpeakE);
+    }
     // Thinking: an uneven breath plus a slow liquid wobble of the whole ring.
     t = uTimeT;
     float breath = (wave(1.7, t, 0.0, uLoopP) + 0.6 * wave(2.93, t, 1.3, uLoopP) + 0.35 * wave(0.71, t, 2.1, uLoopP)) / 1.95;
@@ -562,7 +608,7 @@
 
   const gfs = `#version 300 es
   precision highp float;
-  uniform float uLight, uLevel, uMorph;
+  uniform float uLight, uLevel, uMorph, uSpeak, uSpeakE;
   in vec3 vN;
   in vec2 vS;
   in float vW, vK, vVis, vZ, vGapA, vGapB, vGapT;
@@ -609,6 +655,7 @@
       wh *= depth * depth;
     }
     a *= 0.9 + 0.4 * uLevel * (1.0 - uMorph);
+    a *= 1.0 + 0.45 * uSpeak * uSpeakE * (1.0 - uMorph); // speaking glows with each word
     if (uLight > 0.5) {
       // Light: no bloom; dense overlaps deepen, coverage caps at 1.
       float k = min(1.0, a * 0.7);
@@ -652,7 +699,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakT','uSpeakE','uSylF','uPhrF','uRingW'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -743,7 +790,7 @@
   const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
   let themeChoice = 'auto';
   let styleChoice = 'dots';      // 'dots' | 'glass'
-  let stateChoice = 'listening'; // 'listening' | 'thinking' (both styles)
+  let stateChoice = 'idle'; // 'idle' (waiting / listening) | 'speaking' | 'thinking' (both styles)
   const styleButtons = document.querySelectorAll('[data-style-choice]');
   const stateButtons = document.querySelectorAll('[data-state-choice]');
   const stateGroup = document.getElementById('stateGroup');
@@ -829,7 +876,8 @@
     const orb = q.get('orb') || saved.orb;
     if (orb === 'dots' || orb === 'glass') styleChoice = orb;
     const st = q.get('state') || saved.state;
-    if (st === 'listening' || st === 'thinking') stateChoice = st;
+    if (st === 'idle' || st === 'speaking' || st === 'thinking') stateChoice = st;
+    else if (st === 'listening') stateChoice = 'idle'; // older links
     applyStyle();
     applyTheme();
     showValues();
@@ -993,6 +1041,14 @@
   // Glass: morph progress 0 (listening sphere) -> 1 (thinking ring), eased, ~1.4 s each way.
   let morphP = stateChoice === 'thinking' ? 1 : 0, spin = 0, flow = 0;
   const MORPH_SECS = 1.4;
+  // Speaking cadence: ~4 syllables a second, phrases every ~3 s, rings rolling outward. Mirrors speechEnv() in GLSL.
+  const SPEECH = { syl: 4.2, phr: 0.3, ring: 6.0 };
+  function speechEnv(s, f = SPEECH) {
+    const syl = Math.pow(Math.abs(Math.sin(Math.PI * f.syl * s)), 1.6);
+    const ph = Math.sin(2 * Math.PI * f.phr * s) + 0.5 * Math.sin(4 * Math.PI * f.phr * s + 1.7);
+    const x = Math.min(1, Math.max(0, (ph + 0.9) / 1.1));
+    return syl * (0.3 + 0.7 * x * x * (3 - 2 * x));
+  }
 
   // One glass frame: clocks + audio values in, drawn to `out` (null = screen) through the bloom targets `rt`.
   function renderGlass(st, rt, out, w, h, bg, flipY) {
@@ -1003,6 +1059,7 @@
     gl.uniform1f(GU.uSpinL, st.spinL); gl.uniform1f(GU.uSpinT, st.spinT);
     gl.uniform1f(GU.uFlowL, st.flowL); gl.uniform1f(GU.uFlowT, st.flowT);
     gl.uniform1f(GU.uLoopP, st.loopP || 0); gl.uniform1f(GU.uLoopFT, st.loopFT || 0);
+    setSpeak(GU, st);
     gl.uniform1f(GU.uLevel, st.level);
     gl.uniform1f(GU.uBass, st.bass);
     gl.uniform1f(GU.uHigh, st.high);
@@ -1045,11 +1102,24 @@
   }
 
   const DARK_BG = [0.027, 0.043, 0.078];
-  // Shared by both styles: eased morph 0 (Listening) -> 1 (Thinking), plus the Thinking spin/flow clocks.
+  // Speaking uniforms for either program (missing values = not speaking).
+  function setSpeak(L, st) {
+    gl.uniform1f(L.uSpeak, st.speak || 0);
+    gl.uniform1f(L.uSpeakT, st.speakT || 0);
+    gl.uniform1f(L.uSpeakE, st.speakE || 0);
+    gl.uniform1f(L.uSylF, st.sylF || SPEECH.syl);
+    gl.uniform1f(L.uPhrF, st.phrF || SPEECH.phr);
+    gl.uniform1f(L.uRingW, st.ringW || SPEECH.ring);
+  }
+  // Shared by both styles: eased morph 0 (Idle sphere) -> 1 (Thinking ring), plus the Thinking spin/flow clocks.
+  // Speaking keeps the sphere and fades its rings in over the same 1.4 s.
+  let speakP = stateChoice === 'speaking' ? 1 : 0, speakAmt = speakP;
   function advanceMorph(dt, speed) {
     const target = stateChoice === 'thinking' ? 1 : 0;
     const step = reduceMotion ? 1 : dt / MORPH_SECS;
     morphP += Math.max(-step, Math.min(step, target - morphP));
+    speakP += Math.max(-step, Math.min(step, (stateChoice === 'speaking' ? 1 : 0) - speakP));
+    speakAmt = speakP * speakP * (3 - 2 * speakP);
     const m = morphP * morphP * (3 - 2 * morphP);
     // Pace drifts instead of ticking at a fixed rate (incommensurate sines never line up).
     const tt = motionTime;
@@ -1059,10 +1129,17 @@
     return m;
   }
 
+  // Live speaking: the orb's own voice. A real audio source (mic / AI voice file) still shows through if louder.
+  function liveSpeak() {
+    const e = speechEnv(motionTime);
+    const k = speakAmt, lv = v => v + k * Math.max(0, 0.35 * e - v);
+    return { speak: k, speakT: motionTime, speakE: e,
+             level: lv(live.level), bass: lv(live.bass), mid: lv(live.mid), high: lv(live.high) };
+  }
   function drawGlass(m) {
     // Live, both clock sets are the same clock.
-    const st = { timeL: motionTime, timeT: motionTime, spinL: spin, spinT: spin, flowL: flow, flowT: flow,
-                 level: live.level, bass: live.bass, high: live.high, morph: m, fit: liveFit };
+    const st = Object.assign({ timeL: motionTime, timeT: motionTime, spinL: spin, spinT: spin, flowL: flow, flowT: flow,
+                 morph: m, fit: liveFit }, liveSpeak());
     if (isLight) { gl.useProgram(gprog); gl.uniform1f(GU.uLight, 1); renderGlass(st, null); return; }
     renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
@@ -1081,9 +1158,8 @@
     gl.clear(gl.COLOR_BUFFER_BIT);
     const m = advanceMorph(dt, speed);
     if (styleChoice === 'glass') drawGlass(m);
-    else renderDots({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
-                      level: live.level, bass: live.bass, mid: live.mid, high: live.high, fit: liveFit },
-                    null, canvas.width, canvas.height, dpr);
+    else renderDots(Object.assign({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
+                      fit: liveFit }, liveSpeak()), null, canvas.width, canvas.height, dpr);
     const vals = [live.bass, live.mid, live.high, live.level];
     bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
     requestAnimationFrame(frame);
@@ -1099,6 +1175,7 @@
     gl.uniform1f(U.uRotL, st.rotL); gl.uniform1f(U.uSpinT, st.spinT); gl.uniform1f(U.uFlowT, st.flowT);
     gl.uniform1f(U.uMorph, st.morph);
     gl.uniform1f(U.uLoopP, st.loopP || 0);
+    setSpeak(U, st);
     gl.uniform1f(U.uLevel, st.level);
     gl.uniform1f(U.uBass, st.bass);
     gl.uniform1f(U.uMid, st.mid);
@@ -1128,24 +1205,46 @@
              level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
   }
 
-  // ---- Stage clips: each state as its own seamless loop, plus the transitions between them ----
+  // ---- State clips: Idle, Speaking and Thinking as seamless loops, plus a transition between any two ----
   // The shaders run in clip-loop mode (uLoopP): noise travels closed circles and waves snap to whole cycles. Turns
   // snap to whole meridians (dots) or rock gently (glass ribbons and tubes). So every clip repeats after L seconds.
-  // Transitions run the same clocks: frame 0 is the source loop's frame 0, and the frame after the last one is the
-  // target loop's frame 0. Listening, then the transition, then Thinking, plays without a jump at either cut.
-  // (Listening and Thinking must share the loop length and speed for that to hold.)
-  function clipState(clip, t, L, speed, style) {
-    const TAU = Math.PI * 2, M = MORPH_SECS, P = L * speed;
-    const ease = x => x * x * (3 - 2 * x);
-    let morph, tl, tt; // seconds on the Listening and Thinking clocks
-    if (clip === 'listening') { morph = 0; tl = t; tt = 0; }
-    else if (clip === 'thinking') { morph = 1; tl = 0; tt = t; }
-    else if (clip === 'toThinking') { morph = ease(t / M); tl = t; tt = t - M; }
-    else { morph = ease(1 - t / M); tl = t - M; tt = t; } // toListening
-    // The same gentle, periodic "voice" as the full loop (whole cycles per L), fading out as the ring forms.
+  // Three clock sets: L (the sphere: Idle and Speaking), T (the ring: Thinking), S (the speaking rings and voice).
+  // A transition runs the outgoing state's clocks forward from its loop's frame 0 and the incoming state's clocks
+  // so they reach its loop's frame 0 exactly at the end, so loop -> transition -> loop plays without a jump.
+  // Idle and Speaking share the L clocks, so the Speaking loop starts half a loop later on them, and a transition
+  // between those two lasts half a loop (the fade itself still takes 1.4 s, at the start).
+  // (All clips must share the loop length and speed for the cuts to line up.)
+  const STATE = { idle: { m: 0, k: 0 }, speaking: { m: 0, k: 1 }, thinking: { m: 1, k: 0 } };
+  function clipLength(from, to, L) {
+    if (from === to) return L;
+    return STATE[from].m === 0 && STATE[to].m === 0 ? L / 2 : MORPH_SECS;
+  }
+  function clipState(from, to, t, L, speed, style) {
+    const TAU = Math.PI * 2, P = L * speed, M = MORPH_SECS;
+    const A = STATE[from], B = STATE[to];
+    const D = clipLength(from, to, L);
+    const ease = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+    const u = from === to ? 0 : ease(t / M);
+    const morph = A.m + (B.m - A.m) * u, speak = A.k + (B.k - A.k) * u;
+    const offL = s => s === 'speaking' ? L / 2 : 0;
+    // Seconds on each clock: the outgoing state's clocks start at its frame 0, the incoming state's end at its frame 0.
+    let tl = 0, tt = 0, ts = 0;
+    if (from === to) { tl = t + offL(from); tt = t; ts = t; }
+    else {
+      if (A.m === 0) tl = offL(from) + t; else if (B.m === 0) tl = offL(to) + t - D;
+      if (A.m === 1) tt = t; else if (B.m === 1) tt = t - D;
+      if (A.k === 1) ts = t; else if (B.k === 1) ts = t - D;
+    }
+    // Snapped speech cadence: whole syllables, phrases and rings per loop.
+    const sp = P > 0 ? { syl: Math.max(1, Math.round(SPEECH.syl * P)) / P, phr: Math.max(1, Math.round(SPEECH.phr * P)) / P,
+                         ring: Math.max(1, Math.round(SPEECH.ring * P / TAU)) * TAU / P } : SPEECH;
+    const sc = ts * speed, e = speechEnv(sc, sp);
+    // Idle: a gentle periodic "voice" (whole cycles per L). Speaking: the orb's own speech drives the levels instead.
     const k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
-    const v = (1 - morph) * 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * tl / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * tl / L + 1.3));
-    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6] };
+    const vu = 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * tl / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * tl / L + 1.3));
+    const v = (1 - morph) * ((1 - speak) * vu + speak * 0.35 * e);
+    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6],
+                 speak, speakT: sc, speakE: e, sylF: sp.syl, phrF: sp.phr, ringW: sp.ring };
     if (P <= 0) return Object.assign(st, { timeL: 0, timeT: 0, rotL: 0, spinL: 0, flowL: 0, spinT: 0, flowT: 0, loopP: 0, loopFT: 0 });
     const lc = tl * speed, tc = tt * speed;
     const snap = (total, step, min = 0) => Math.max(min, Math.round(total / step)) * step;
@@ -1161,15 +1260,16 @@
       loopP: P, loopFT: flowTotal,
     });
   }
-  const CLIP_TAG = { loop: 'loop', listening: 'listening', thinking: 'thinking', toThinking: 'to-thinking', toListening: 'to-listening' };
+  const TITLE = { idle: 'Idle', speaking: 'Speaking', thinking: 'Thinking' };
 
+  // clip: 'loop' (the full Idle -> Thinking -> Idle loop) or { from, to } (from === to: that state's loop).
   async function exportClip({ size, fps, length, dot, bg }, style, clip, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
     const W = size, H = size;
-    const isTransition = clip === 'toThinking' || clip === 'toListening';
-    const N = Math.round((isTransition ? MORPH_SECS : length) * fps), L = Math.round(length * fps) / fps;
+    const L = Math.round(length * fps) / fps;
+    const N = Math.round((clip === 'loop' ? L : clipLength(clip.from, clip.to, L)) * fps);
     const speed = Number(speedInput.value);
-    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip, t, L, speed, style);
+    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip.from, clip.to, t, L, speed, style);
     const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9'], { width: W, height: H });
     if (!codec) throw new Error('This browser cannot encode video. Try Chrome or Edge.');
     const isMp4 = codec === 'avc';
@@ -1242,29 +1342,29 @@
   const exportGo = document.getElementById('exportGo');
   const exportProg = document.getElementById('exportProg');
   const exportMsg = document.getElementById('exportMsg');
-  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0, clip: 'loop', dir: 'toThinking' };
+  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0, clip: 'idle', from: 'idle', to: 'speaking' };
   const exportHint = document.getElementById('exportHint');
-  const CLIP_HINT = {
-    loop: 'Listening → Thinking → Listening, seamless loop.',
-    listening: 'Listening on its own, seamless loop.',
-    thinking: 'Thinking on its own, seamless loop.',
-    transition: 'One-shot morph (1.4 s). Its first frame matches the start of the source loop and it ends right where the target loop begins.',
-    all: 'Four files: Listening loop, To Thinking, Thinking loop, To Listening. They chain without jumps.',
-  };
   function updateExportHint() {
-    exportHint.textContent = CLIP_HINT[exportOpts.clip] + ' ' + (exportOpts.bg === 1
+    const o = exportOpts;
+    const what = o.clip === 'transition'
+      ? (o.from === o.to ? 'Pick two different states.'
+        : `${TITLE[o.from]} → ${TITLE[o.to]}, ${+clipLength(o.from, o.to, o.length).toFixed(2)} s, plays once. It starts on the first frame of the ${TITLE[o.from]} loop and ends where the ${TITLE[o.to]} loop begins.`)
+      : o.clip === 'all' ? 'Three files: Idle, Speaking and Thinking loops.'
+      : o.clip === 'loop' ? 'Idle → Thinking → Idle, seamless loop.'
+      : `${TITLE[o.clip]} on its own, seamless loop.`;
+    exportHint.textContent = what + ' ' + (o.bg === 1
       ? 'MP4 on pure white: in Figma set the layer blend mode to Multiply and the white disappears.'
       : 'MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.');
-    document.getElementById('exportDirRow').hidden = exportOpts.clip !== 'transition';
-    document.getElementById('exportLenRow').hidden = exportOpts.clip === 'transition';
+    document.getElementById('exportFromRow').hidden = o.clip !== 'transition';
+    document.getElementById('exportToRow').hidden = o.clip !== 'transition';
+    exportGo.disabled = exporting || (o.clip === 'transition' && o.from === o.to);
   }
-  updateExportHint();
-  [['clip', 'exportClip'], ['dir', 'exportDir']].forEach(([key, attr]) => {
+  [['clip', 'exportClip'], ['from', 'exportFrom'], ['to', 'exportTo']].forEach(([key, attr]) => {
     const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
     btns.forEach(b => b.addEventListener('click', () => {
       exportOpts[key] = b.dataset[attr];
-      updateExportHint();
       btns.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      updateExportHint();
     }));
   });
   [['size', 'exportSize'], ['fps', 'exportFps'], ['length', 'exportLen'], ['dot', 'exportDot'], ['bg', 'exportBg']].forEach(([key, attr]) => {
@@ -1275,6 +1375,7 @@
       btns.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     }));
   });
+  updateExportHint();
   document.getElementById('exportBtn').addEventListener('click', () => {
     exportMsg.textContent = '';
     document.getElementById('exportDotRow').hidden = styleChoice !== 'dots';
@@ -1293,8 +1394,9 @@
     try {
       const style = styleChoice;
       const o = exportOpts;
-      const clips = o.clip === 'all' ? ['listening', 'toThinking', 'thinking', 'toListening']
-                  : o.clip === 'transition' ? [o.dir] : [o.clip];
+      const clips = o.clip === 'loop' ? ['loop']
+                  : o.clip === 'all' ? ['idle', 'speaking', 'thinking'].map(x => ({ from: x, to: x }))
+                  : o.clip === 'transition' ? [{ from: o.from, to: o.to }] : [{ from: o.clip, to: o.clip }];
       let bytes = 0, ext = 'mp4';
       for (let i = 0; i < clips.length; i++) {
         const clip = clips[i];
@@ -1308,8 +1410,9 @@
         const a = document.createElement('a');
         a.href = URL.createObjectURL(res.blob);
         const dotTag = (style === 'dots' ? `-dots${o.dot}x` : '') + (o.bg === 1 ? '-white' : '');
-        const len = clip === 'toThinking' || clip === 'toListening' ? MORPH_SECS : o.length;
-        a.download = `voice-orb-${style}-${CLIP_TAG[clip]}-${o.size}p${o.fps}-${len}s${dotTag}.${ext}`;
+        const name = clip === 'loop' ? 'loop' : clip.from === clip.to ? clip.from : `${clip.from}-to-${clip.to}`;
+        const len = clip === 'loop' ? o.length : +clipLength(clip.from, clip.to, o.length).toFixed(2);
+        a.download = `voice-orb-${style}-${name}-${o.size}p${o.fps}-${len}s${dotTag}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 60000);
       }
@@ -1320,8 +1423,8 @@
     } finally {
       document.body.classList.remove('rendering');
       exporting = false;
-      exportGo.disabled = false;
       document.getElementById('exportClose').disabled = false;
+      updateExportHint();
       exportProg.hidden = true;
       resize();
       applyTheme(); // restores the theme's blend mode and clear colour
