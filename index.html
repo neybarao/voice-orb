@@ -165,7 +165,7 @@
   .export .row.stack { flex-direction: column; align-items: stretch; gap: 6px; }
   .export .row.stack .theme { display: flex; }
   .export .row.stack .theme { flex-wrap: wrap; }
-  .export .row.stack .theme button { flex: 1 1 30%; padding-inline: 6px; }
+  .export .row.stack .theme button { flex: 1 1 22%; padding-inline: 6px; }
 </style>
 </head>
 <body>
@@ -194,6 +194,7 @@
     <button type="button" data-state-choice="idle" aria-pressed="true">Idle</button>
     <button type="button" data-state-choice="speaking" aria-pressed="false">Speaking</button>
     <button type="button" data-state-choice="thinking" aria-pressed="false">Thinking</button>
+    <button type="button" data-state-choice="error" aria-pressed="false">Error</button>
   </div>
   <div class="theme" role="group" aria-label="Theme">
     <button type="button" data-theme-choice="auto" aria-pressed="true">Auto</button>
@@ -201,7 +202,7 @@
     <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
   </div>
   <div class="status" aria-live="polite">
-    <span id="statusText">Demo signal</span>
+    <span id="statusText">No audio: demo voice</span>
     <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
   </div>
 </div>
@@ -214,8 +215,9 @@
       <button type="button" data-export-clip="idle" aria-pressed="true">Idle</button>
       <button type="button" data-export-clip="speaking" aria-pressed="false">Speaking</button>
       <button type="button" data-export-clip="thinking" aria-pressed="false">Thinking</button>
+      <button type="button" data-export-clip="error" aria-pressed="false">Error</button>
       <button type="button" data-export-clip="transition" aria-pressed="false">Transition</button>
-      <button type="button" data-export-clip="all" aria-pressed="false">All 3 states</button>
+      <button type="button" data-export-clip="all" aria-pressed="false">All 4 states</button>
       <button type="button" data-export-clip="loop" aria-pressed="false">Full loop</button>
     </div>
   </div>
@@ -224,6 +226,7 @@
       <button type="button" data-export-from="idle" aria-pressed="true">Idle</button>
       <button type="button" data-export-from="speaking" aria-pressed="false">Speaking</button>
       <button type="button" data-export-from="thinking" aria-pressed="false">Thinking</button>
+      <button type="button" data-export-from="error" aria-pressed="false">Error</button>
     </div>
   </div>
   <div class="row" id="exportToRow" hidden><span>To</span>
@@ -231,6 +234,7 @@
       <button type="button" data-export-to="idle" aria-pressed="false">Idle</button>
       <button type="button" data-export-to="speaking" aria-pressed="true">Speaking</button>
       <button type="button" data-export-to="thinking" aria-pressed="false">Thinking</button>
+      <button type="button" data-export-to="error" aria-pressed="false">Error</button>
     </div>
   </div>
   <div class="row"><span>Background</span>
@@ -312,6 +316,7 @@
   // plus a soft swell and glow with each word. uSpeak = how much Speaking is showing, uSpeakE = current loudness.
   const SPEAK_GLSL = `
   uniform float uSpeak, uSpeakE;`;
+  // Error: the Thinking ring drained to black and white. uGray = how much of it is showing.
 
   const vs = `#version 300 es
   precision highp float;
@@ -320,7 +325,7 @@
   uniform float uTimeL, uTimeT, uRotL, uSpinT, uFlowT, uMorph;
   uniform float uLevel, uBass, uMid, uHigh, uPass, uDpr, uLight;
   // Clip export only: the period (in clock units) after which every motion repeats exactly. 0 = live / off.
-  uniform float uLoopP;
+  uniform float uLoopP, uGray;
   ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vColor;
@@ -423,6 +428,7 @@
 
     float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
     a *= 1.0 + 0.35 * uSpeak * listen * uSpeakE; // speaking glows a little with each word
+    col = mix(col, vec3(dot(col, vec3(0.299, 0.587, 0.114)) * 1.15), uGray); // error: black and white
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
     gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
@@ -463,7 +469,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -584,7 +590,7 @@
 
   const gfs = `#version 300 es
   precision highp float;
-  uniform float uLight, uLevel, uMorph, uSpeak, uSpeakE;
+  uniform float uLight, uLevel, uMorph, uSpeak, uSpeakE, uGray;
   in vec3 vN;
   in vec2 vS;
   in float vW, vK, vVis, vZ, vGapA, vGapB, vGapT;
@@ -604,6 +610,7 @@
     vec3 n = normalize(vN + 1e-7);
     float f = 1.0 - abs(n.z); // fresnel: 0 facing us, 1 edge-on
     vec3 c = grad(vS);
+    c = mix(c, vec3(dot(c, vec3(0.299, 0.587, 0.114)) * 1.3), uGray); // error: black and white
     float a, wh = 0.0; // wh: near-white light on top of the colour (edges, crossings)
     if (vK < -0.5) {
       // Glass body: dim, deeper colour in the middle, a wide bright rim at the silhouette.
@@ -675,7 +682,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -852,7 +859,7 @@
     const orb = q.get('orb') || saved.orb;
     if (orb === 'dots' || orb === 'glass') styleChoice = orb;
     const st = q.get('state') || saved.state;
-    if (st === 'idle' || st === 'speaking' || st === 'thinking') stateChoice = st;
+    if (st === 'idle' || st === 'speaking' || st === 'thinking' || st === 'error') stateChoice = st;
     else if (st === 'listening') stateChoice = 'idle'; // older links
     applyStyle();
     applyTheme();
@@ -901,29 +908,38 @@
   const micLabel = document.getElementById('micLabel');
   const bars = document.querySelectorAll('.meter i');
 
-  // Both sources feed one analyser: your voice (mic) and the AI voice played by the page.
-  let ctx = null, analyser = null, mix = null, stream = null, micSrc = null, freq = null, wave = null;
+  // Two separate audio channels, one per state that reacts to a voice:
+  //   user bus: the person's microphone -> drives Idle (waiting / listening).
+  //   AI bus:   the assistant's voice (the "AI voice" file, or anything attached with voiceOrb.attachAIVoice)
+  //             -> drives Speaking. With no AI audio playing, Speaking runs a speech-like demo voice.
+  // Thinking and Error don't follow either voice. `live` holds the levels actually shown (blended by state).
+  let ctx = null, userBus = null, aiBus = null, stream = null, micSrc = null;
   const player = new Audio();
   let playerSrc = null;
+  const aiElements = new Set(), aiStreams = new Set();
   const live = { level: 0, bass: 0, mid: 0, high: 0 };
+  const liveUser = { level: 0, bass: 0, mid: 0, high: 0 };
+  const liveAI = { level: 0, bass: 0, mid: 0, high: 0 };
 
+  function makeBus() {
+    const an = ctx.createAnalyser();
+    an.fftSize = 1024;
+    an.smoothingTimeConstant = 0.6;
+    return { an, freq: new Uint8Array(an.frequencyBinCount), wave: new Uint8Array(an.fftSize) };
+  }
   function ensureAudio() {
     if (ctx) return;
     ctx = new (window.AudioContext || window.webkitAudioContext)();
-    mix = ctx.createGain();
-    analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.6;
-    mix.connect(analyser);
-    freq = new Uint8Array(analyser.frequencyBinCount);
-    wave = new Uint8Array(analyser.fftSize);
+    userBus = makeBus();
+    aiBus = makeBus();
   }
-  const listening = () => !!stream || (!!playerSrc && !player.paused);
+  const userOn = () => !!stream;
+  const aiOn = () => aiStreams.size > 0 || [...aiElements].some(el => !el.paused && !el.ended);
   function refreshStatus() {
     const parts = [];
-    if (stream) parts.push('Listening to you');
-    if (playerSrc && !player.paused) parts.push('AI voice playing');
-    statusText.textContent = parts.length ? parts.join(' + ') : 'Demo signal';
+    if (userOn()) parts.push('Mic on (Idle)');
+    if (aiOn()) parts.push('AI voice (Speaking)');
+    statusText.textContent = parts.length ? parts.join(' + ') : 'No audio: demo voice';
   }
 
   async function startMic() {
@@ -936,7 +952,7 @@
       await ctx.resume();
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       micSrc = ctx.createMediaStreamSource(stream);
-      micSrc.connect(mix); // not sent to the speakers, so no feedback
+      micSrc.connect(userBus.an); // not sent to the speakers, so no feedback
       micBtn.setAttribute('aria-pressed', 'true');
       micLabel.textContent = 'Stop microphone';
       refreshStatus();
@@ -964,58 +980,65 @@
     await ctx.resume();
     if (player.src) URL.revokeObjectURL(player.src);
     player.src = URL.createObjectURL(file);
-    if (!playerSrc) {
-      playerSrc = ctx.createMediaElementSource(player);
-      playerSrc.connect(mix);
-      playerSrc.connect(ctx.destination); // you hear it, the orb sees it
-    }
+    if (!playerSrc) playerSrc = attachAIVoice(player);
     try { await player.play(); } catch { statusText.textContent = 'Tap again to play the audio.'; }
     refreshStatus();
   });
-  player.addEventListener('ended', refreshStatus);
-  player.addEventListener('pause', refreshStatus);
 
-  function bandAvg(lo, hi) {
-    const nyq = ctx.sampleRate / 2, n = freq.length;
-    const a = Math.max(1, Math.floor(lo / nyq * n)), b = Math.min(n - 1, Math.ceil(hi / nyq * n));
-    let sum = 0;
-    for (let i = a; i <= b; i++) sum += freq[i];
-    return sum / ((b - a + 1) * 255);
+  // Route the assistant's voice into the AI bus. Accepts an <audio>/<video> element (it keeps playing through the
+  // speakers) or a MediaStream such as a WebRTC track (analysed only; play it wherever you already do).
+  function attachAIVoice(source) {
+    ensureAudio();
+    if (source instanceof MediaStream) {
+      const node = ctx.createMediaStreamSource(source);
+      node.connect(aiBus.an);
+      aiStreams.add(node);
+      source.getAudioTracks().forEach(tr => tr.addEventListener('ended', () => { node.disconnect(); aiStreams.delete(node); refreshStatus(); }));
+      refreshStatus();
+      return node;
+    }
+    const node = ctx.createMediaElementSource(source);
+    node.connect(aiBus.an);
+    node.connect(ctx.destination); // you hear it, the orb sees it
+    aiElements.add(source);
+    ['play', 'pause', 'ended'].forEach(ev => source.addEventListener(ev, refreshStatus));
+    refreshStatus();
+    return node;
   }
 
-  function readAudio(t) {
+  function bandAvg(bus, lo, hi) {
+    const nyq = ctx.sampleRate / 2, n = bus.freq.length;
+    const a = Math.max(1, Math.floor(lo / nyq * n)), b = Math.min(n - 1, Math.ceil(hi / nyq * n));
+    let sum = 0;
+    for (let i = a; i <= b; i++) sum += bus.freq[i];
+    return sum / ((b - a + 1) * 255);
+  }
+  function measure(bus) {
+    bus.an.getByteFrequencyData(bus.freq);
+    bus.an.getByteTimeDomainData(bus.wave);
+    let rms = 0;
+    for (let i = 0; i < bus.wave.length; i++) { const v = (bus.wave[i] - 128) / 128; rms += v * v; }
+    return { level: Math.sqrt(rms / bus.wave.length) * 4, bass: bandAvg(bus, 40, 250) * 1.6,
+             mid: bandAvg(bus, 250, 2000) * 1.8, high: bandAvg(bus, 2000, 8000) * 2.6 };
+  }
+  const SILENT = { level: 0, bass: 0, mid: 0, high: 0 };
+  function follow(into, target) {
     const k = Number(sens.value);
-    let level, bass, mid, high;
-    if (listening()) {
-      analyser.getByteFrequencyData(freq);
-      analyser.getByteTimeDomainData(wave);
-      let rms = 0;
-      for (let i = 0; i < wave.length; i++) { const v = (wave[i] - 128) / 128; rms += v * v; }
-      level = Math.sqrt(rms / wave.length) * 4;
-      bass = bandAvg(40, 250) * 1.6;
-      mid = bandAvg(250, 2000) * 1.8;
-      high = bandAvg(2000, 8000) * 2.6;
-    } else {
-      // Speech-like demo: syllable bursts inside slower phrases.
-      const phrase = Math.max(0, Math.sin(t * 0.55) * 0.8 + 0.35);
-      const syl = Math.pow(Math.max(0, Math.sin(t * 7.3) * Math.sin(t * 2.9 + 1.2)), 1.5);
-      level = phrase * (0.25 + 0.75 * syl) * 0.75;
-      bass = level * (0.6 + 0.4 * Math.sin(t * 1.3));
-      mid = level * 0.8;
-      high = level * (0.5 + 0.5 * Math.sin(t * 5.1 + 0.4));
+    for (const key in into) {
+      const v = Math.min(2.4, target[key] * k); // ceiling 2.4 so loud sounds push the orb further
+      into[key] += (v - into[key]) * (v > into[key] ? 0.45 : 0.07); // fast attack, slow release
     }
-    const target = { level, bass, mid, high };
-    for (const key in live) {
-      const v = Math.min(2.4, target[key] * k); // ceiling doubled (was 1.2) so loud sounds push the orb further
-      live[key] += (v - live[key]) * (v > live[key] ? 0.45 : 0.07); // fast attack, slow release
-    }
+  }
+  function readAudio() {
+    follow(liveUser, userOn() ? measure(userBus) : SILENT);
+    follow(liveAI, aiOn() ? measure(aiBus) : SILENT);
   }
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const start = performance.now();
   let rot = 0, last = start, motionTime = 0;
   // Glass: morph progress 0 (listening sphere) -> 1 (thinking ring), eased, ~1.4 s each way.
-  let morphP = stateChoice === 'thinking' ? 1 : 0, spin = 0, flow = 0;
+  let morphP = stateChoice === 'thinking' || stateChoice === 'error' ? 1 : 0, spin = 0, flow = 0;
   const MORPH_SECS = 1.4;
   // Speaking cadence: ~4 syllables a second inside phrases every ~3 s.
   const SPEECH = { syl: 4.2, phr: 0.3 };
@@ -1082,16 +1105,20 @@
   function setSpeak(L, st) {
     gl.uniform1f(L.uSpeak, st.speak || 0);
     gl.uniform1f(L.uSpeakE, st.speakE || 0);
+    gl.uniform1f(L.uGray, st.gray || 0);
   }
   // Shared by both styles: eased morph 0 (Idle sphere) -> 1 (Thinking ring), plus the Thinking spin/flow clocks.
-  // Speaking keeps the sphere and fades its rings in over the same 1.4 s.
+  // Speaking keeps the sphere and fades its voice in over the same 1.4 s; Error is the ring fading to black and white.
   let speakP = stateChoice === 'speaking' ? 1 : 0, speakAmt = speakP;
+  let grayP = stateChoice === 'error' ? 1 : 0, grayAmt = grayP; // Error: the ring, in black and white
   function advanceMorph(dt, speed) {
-    const target = stateChoice === 'thinking' ? 1 : 0;
+    const target = stateChoice === 'thinking' || stateChoice === 'error' ? 1 : 0;
     const step = reduceMotion ? 1 : dt / MORPH_SECS;
     morphP += Math.max(-step, Math.min(step, target - morphP));
     speakP += Math.max(-step, Math.min(step, (stateChoice === 'speaking' ? 1 : 0) - speakP));
     speakAmt = speakP * speakP * (3 - 2 * speakP);
+    grayP += Math.max(-step, Math.min(step, (stateChoice === 'error' ? 1 : 0) - grayP));
+    grayAmt = grayP * grayP * (3 - 2 * grayP);
     const m = morphP * morphP * (3 - 2 * morphP);
     // Pace drifts instead of ticking at a fixed rate (incommensurate sines never line up).
     const tt = motionTime;
@@ -1103,12 +1130,18 @@
 
   // Live levels per state. With the mic or an AI voice file on, the orb follows that audio in Idle and Speaking.
   // Without one (demo): Idle just breathes, calm, and Speaking runs a speech-like voice.
+  // Idle follows the mic (calm breath when it's off); Speaking follows the AI voice (demo speech when none plays).
   function liveSpeak() {
-    const e = speechEnv(motionTime), k = speakAmt, real = listening();
+    const k = speakAmt, ai = aiOn(), user = userOn();
+    const e = ai ? Math.min(1, liveAI.level * 1.6) : speechEnv(motionTime); // swell / glow per word
     const calm = 0.06 * (0.6 + 0.4 * Math.sin(motionTime * 0.9));
-    const lv = (v, f) => real ? v : (1 - k) * calm * f + k * 0.55 * e * f;
-    return { speak: k, speakE: e,
-             level: lv(live.level, 1), bass: lv(live.bass, 0.9), mid: lv(live.mid, 0.8), high: lv(live.high, 0.7) };
+    const f = { level: 1, bass: 0.9, mid: 0.8, high: 0.7 };
+    for (const key in live) {
+      const u = user ? liveUser[key] : calm * f[key];
+      const a = ai ? liveAI[key] : 0.55 * e * f[key];
+      live[key] = (1 - k) * u + k * a;
+    }
+    return { speak: k, speakE: e, gray: grayAmt, level: live.level, bass: live.bass, mid: live.mid, high: live.high };
   }
   function drawGlass(m) {
     // Live, both clock sets are the same clock.
@@ -1124,7 +1157,7 @@
     const t = (now - start) / 1000;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    readAudio(t);
+    readAudio();
     const speed = Number(speedInput.value) * (reduceMotion ? 0.3 : 1);
     motionTime += dt * speed;
     rot += dt * speed * (0.12 + live.level * 0.25);
@@ -1188,10 +1221,13 @@
   // Idle and Speaking share the L clocks, so the Speaking loop starts half a loop later on them, and a transition
   // between those two lasts half a loop (the fade itself still takes 1.4 s, at the start).
   // (All clips must share the loop length and speed for the cuts to line up.)
-  const STATE = { idle: { m: 0, k: 0 }, speaking: { m: 0, k: 1 }, thinking: { m: 1, k: 0 } };
+  // m: ring (1) or sphere (0); k: speaking; g: black and white. States on the same shape share its clocks, so the
+  // second one of each pair (Speaking on the sphere, Error on the ring) starts half a loop later on them.
+  const STATE = { idle: { m: 0, k: 0, g: 0 }, speaking: { m: 0, k: 1, g: 0 },
+                  thinking: { m: 1, k: 0, g: 0 }, error: { m: 1, k: 0, g: 1 } };
   function clipLength(from, to, L) {
     if (from === to) return L;
-    return STATE[from].m === 0 && STATE[to].m === 0 ? L / 2 : MORPH_SECS;
+    return STATE[from].m === STATE[to].m ? L / 2 : MORPH_SECS;
   }
   function clipState(from, to, t, L, speed, style) {
     const TAU = Math.PI * 2, P = L * speed, M = MORPH_SECS;
@@ -1199,14 +1235,14 @@
     const D = clipLength(from, to, L);
     const ease = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
     const u = from === to ? 0 : ease(t / M);
-    const morph = A.m + (B.m - A.m) * u, speak = A.k + (B.k - A.k) * u;
-    const offL = s => s === 'speaking' ? L / 2 : 0;
+    const morph = A.m + (B.m - A.m) * u, speak = A.k + (B.k - A.k) * u, gray = A.g + (B.g - A.g) * u;
+    const offL = s => s === 'speaking' ? L / 2 : 0, offT = s => s === 'error' ? L / 2 : 0;
     // Seconds on each clock: the outgoing state's clocks start at its frame 0, the incoming state's end at its frame 0.
     let tl = 0, tt = 0, ts = 0;
-    if (from === to) { tl = t + offL(from); tt = t; ts = t; }
+    if (from === to) { tl = t + offL(from); tt = t + offT(from); ts = t; }
     else {
       if (A.m === 0) tl = offL(from) + t; else if (B.m === 0) tl = offL(to) + t - D;
-      if (A.m === 1) tt = t; else if (B.m === 1) tt = t - D;
+      if (A.m === 1) tt = offT(from) + t; else if (B.m === 1) tt = offT(to) + t - D;
       if (A.k === 1) ts = t; else if (B.k === 1) ts = t - D;
     }
     // Snapped speech cadence: whole syllables and phrases per loop (in real seconds, like the voice).
@@ -1216,7 +1252,7 @@
     const kb = Math.max(1, Math.round(L * 0.14));
     const calm = 0.06 * (0.6 + 0.4 * Math.sin(TAU * kb * tl / L));
     const v = (1 - morph) * ((1 - speak) * calm + speak * 0.55 * e);
-    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6], speak, speakE: e };
+    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6], speak, speakE: e, gray };
     if (P <= 0) return Object.assign(st, { timeL: 0, timeT: 0, rotL: 0, spinL: 0, flowL: 0, spinT: 0, flowT: 0, loopP: 0, loopFT: 0 });
     const lc = tl * speed, tc = tt * speed;
     const snap = (total, step, min = 0) => Math.max(min, Math.round(total / step)) * step;
@@ -1232,7 +1268,7 @@
       loopP: P, loopFT: flowTotal,
     });
   }
-  const TITLE = { idle: 'Idle', speaking: 'Speaking', thinking: 'Thinking' };
+  const TITLE = { idle: 'Idle', speaking: 'Speaking', thinking: 'Thinking', error: 'Error' };
 
   // clip: 'loop' (the full Idle -> Thinking -> Idle loop) or { from, to } (from === to: that state's loop).
   async function exportClip({ size, fps, length, dot, bg }, style, clip, onProgress) {
@@ -1321,7 +1357,7 @@
     const what = o.clip === 'transition'
       ? (o.from === o.to ? 'Pick two different states.'
         : `${TITLE[o.from]} → ${TITLE[o.to]}, ${+clipLength(o.from, o.to, o.length).toFixed(2)} s, plays once. It starts on the first frame of the ${TITLE[o.from]} loop and ends where the ${TITLE[o.to]} loop begins.`)
-      : o.clip === 'all' ? 'Three files: Idle, Speaking and Thinking loops.'
+      : o.clip === 'all' ? 'Four files: Idle, Speaking, Thinking and Error loops.'
       : o.clip === 'loop' ? 'Idle → Thinking → Idle, seamless loop.'
       : `${TITLE[o.clip]} on its own, seamless loop.`;
     exportHint.textContent = what + ' ' + (o.bg === 1
@@ -1367,7 +1403,7 @@
       const style = styleChoice;
       const o = exportOpts;
       const clips = o.clip === 'loop' ? ['loop']
-                  : o.clip === 'all' ? ['idle', 'speaking', 'thinking'].map(x => ({ from: x, to: x }))
+                  : o.clip === 'all' ? ['idle', 'speaking', 'thinking', 'error'].map(x => ({ from: x, to: x }))
                   : o.clip === 'transition' ? [{ from: o.from, to: o.to }] : [{ from: o.clip, to: o.clip }];
       let bytes = 0, ext = 'mp4';
       for (let i = 0; i < clips.length; i++) {
@@ -1402,6 +1438,24 @@
       applyTheme(); // restores the theme's blend mode and clear colour
     }
   });
+  // ---- Programmatic control, for wiring the orb into a product ----
+  //   voiceOrb.setState('idle' | 'speaking' | 'thinking' | 'error')  // eases over 1.4 s from wherever it is
+  //   voiceOrb.state                                                  // current target state
+  //   await voiceOrb.useMicrophone() / voiceOrb.stopMicrophone()      // the user's voice, shown in Idle
+  //   voiceOrb.attachAIVoice(audioElement | mediaStream)              // the assistant's voice, shown in Speaking
+  const STATES = ['idle', 'speaking', 'thinking', 'error'];
+  window.voiceOrb = {
+    setState(name) {
+      if (!STATES.includes(name)) throw new Error('Unknown state: ' + name + ' (use ' + STATES.join(', ') + ')');
+      stateChoice = name;
+      applyStyle();
+      saveSettings();
+    },
+    get state() { return stateChoice; },
+    useMicrophone: startMic,
+    stopMicrophone: stopMic,
+    attachAIVoice,
+  };
   requestAnimationFrame(frame);
 })();
 </script>
