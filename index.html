@@ -308,22 +308,10 @@
     return sin(f * t + ph);
   }`;
 
-  // Speaking: rings of sound roll out from the centre of the orb toward its edge, one per syllable. Each ring
-  // carries the loudness of the syllable that launched it, so the rings bunch and fade like speech.
-  // uSpeakT is the Speaking clock; the frequencies are uniforms so a clip export can snap them to whole cycles.
+  // Speaking: the sphere reacts to the orb's own voice like Listening reacts to yours (driven through uLevel etc.),
+  // plus a soft swell and glow with each word. uSpeak = how much Speaking is showing, uSpeakE = current loudness.
   const SPEAK_GLSL = `
-  uniform float uSpeak, uSpeakT, uSpeakE, uSylF, uPhrF, uRingW;
-  float speechEnv(float s){
-    float syl = pow(abs(sin(3.1415926 * uSylF * s)), 1.6);
-    float ph = sin(6.2831853 * uPhrF * s) + 0.5 * sin(12.566371 * uPhrF * s + 1.7);
-    return syl * (0.3 + 0.7 * smoothstep(-0.9, 0.2, ph)); // short pauses that never go fully silent
-  }
-  // ang: angle from the point of the orb that faces the camera (0) to the far side (PI).
-  float speakRings(float ang){
-    const float K = 7.0;
-    float e = speechEnv(uSpeakT - ang * K / uRingW);
-    return sin(ang * K - uRingW * uSpeakT) * e;
-  }`;
+  uniform float uSpeak, uSpeakE;`;
 
   const vs = `#version 300 es
   precision highp float;
@@ -391,12 +379,8 @@
     vec3 nrm = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
     p = rotX(p, 0.28);
     nrm = rotX(nrm, 0.28);
-    // Speaking: rings travel across the sphere from the side facing us, and the whole orb swells with each word.
-    float rip = 0.0;
-    if (uSpeak > 0.0) {
-      rip = speakRings(acos(clamp(nrm.z, -1.0, 1.0)));
-      p += nrm * uSpeak * (0.075 * rip + 0.06 * uSpeakE);
-    }
+    // Speaking: a soft swell with each word, on top of the voice reaction.
+    p += nrm * (uSpeak * 0.03 * uSpeakE);
 
     // ---- Thinking: the same dots wrap a ring facing the camera (driven by the *T clocks) ----
     // Each meridian becomes one coil around the tube; the coils slide around it and the ring turns slowly.
@@ -438,11 +422,7 @@
     col = mix(col, hot, pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
 
     float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
-    if (uSpeak > 0.0) {
-      // Ring crests light up the dots they pass, so the waves read even face-on.
-      a *= 1.0 + uSpeak * listen * (0.5 * uSpeakE + 1.6 * max(0.0, rip));
-      col = mix(col, vec3(1.0, 0.95, 0.92), uSpeak * listen * (1.0 - uLight) * 0.35 * max(0.0, rip));
-    }
+    a *= 1.0 + 0.35 * uSpeak * listen * uSpeakE; // speaking glows a little with each word
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
     gl_PointSize = (uPass < 0.5 ? 2.3 : 8.0) * uDpr;
@@ -483,7 +463,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakT','uSpeakE','uSylF','uPhrF','uRingW'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -555,11 +535,7 @@
     float n1 = snoise(p * 0.7 + drift(vec3(0.0, 0.3, 0.2), t, uLoopP));
     float n2 = snoise(p * 2.6 + drift(vec3(0.5, 0.0, -0.3), t, uLoopP));
     p *= 1.0 + blob * n1 + 0.01 * uHigh * n2 * listen + 0.04 * uLevel * listen;
-    // Speaking: rings roll across the glass from the side facing us; the shell swells with each word.
-    if (uSpeak > 0.0) {
-      float rip = speakRings(acos(clamp(normalize(p).z, -1.0, 1.0)));
-      p *= 1.0 + uSpeak * listen * (0.05 * rip + 0.045 * uSpeakE);
-    }
+    p *= 1.0 + uSpeak * listen * 0.025 * uSpeakE; // speaking: a soft swell with each word
     // Thinking: an uneven breath plus a slow liquid wobble of the whole ring.
     t = uTimeT;
     float breath = (wave(1.7, t, 0.0, uLoopP) + 0.6 * wave(2.93, t, 1.3, uLoopP) + 0.35 * wave(0.71, t, 2.1, uLoopP)) / 1.95;
@@ -655,7 +631,7 @@
       wh *= depth * depth;
     }
     a *= 0.9 + 0.4 * uLevel * (1.0 - uMorph);
-    a *= 1.0 + 0.45 * uSpeak * uSpeakE * (1.0 - uMorph); // speaking glows with each word
+    a *= 1.0 + 0.3 * uSpeak * uSpeakE * (1.0 - uMorph); // speaking glows a little with each word
     if (uLight > 0.5) {
       // Light: no bloom; dense overlaps deepen, coverage caps at 1.
       float k = min(1.0, a * 0.7);
@@ -699,7 +675,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakT','uSpeakE','uSylF','uPhrF','uRingW'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -1041,13 +1017,13 @@
   // Glass: morph progress 0 (listening sphere) -> 1 (thinking ring), eased, ~1.4 s each way.
   let morphP = stateChoice === 'thinking' ? 1 : 0, spin = 0, flow = 0;
   const MORPH_SECS = 1.4;
-  // Speaking cadence: ~4 syllables a second, phrases every ~3 s, rings rolling outward. Mirrors speechEnv() in GLSL.
-  const SPEECH = { syl: 4.2, phr: 0.3, ring: 6.0 };
+  // Speaking cadence: ~4 syllables a second inside phrases every ~3 s.
+  const SPEECH = { syl: 4.2, phr: 0.3 };
   function speechEnv(s, f = SPEECH) {
     const syl = Math.pow(Math.abs(Math.sin(Math.PI * f.syl * s)), 1.6);
     const ph = Math.sin(2 * Math.PI * f.phr * s) + 0.5 * Math.sin(4 * Math.PI * f.phr * s + 1.7);
-    const x = Math.min(1, Math.max(0, (ph + 0.9) / 1.1));
-    return syl * (0.3 + 0.7 * x * x * (3 - 2 * x));
+    const x = Math.min(1, Math.max(0, (ph + 0.6) / 1.0));
+    return (0.25 + 0.75 * syl) * (0.15 + 0.85 * x * x * (3 - 2 * x));
   }
 
   // One glass frame: clocks + audio values in, drawn to `out` (null = screen) through the bloom targets `rt`.
@@ -1105,11 +1081,7 @@
   // Speaking uniforms for either program (missing values = not speaking).
   function setSpeak(L, st) {
     gl.uniform1f(L.uSpeak, st.speak || 0);
-    gl.uniform1f(L.uSpeakT, st.speakT || 0);
     gl.uniform1f(L.uSpeakE, st.speakE || 0);
-    gl.uniform1f(L.uSylF, st.sylF || SPEECH.syl);
-    gl.uniform1f(L.uPhrF, st.phrF || SPEECH.phr);
-    gl.uniform1f(L.uRingW, st.ringW || SPEECH.ring);
   }
   // Shared by both styles: eased morph 0 (Idle sphere) -> 1 (Thinking ring), plus the Thinking spin/flow clocks.
   // Speaking keeps the sphere and fades its rings in over the same 1.4 s.
@@ -1129,12 +1101,14 @@
     return m;
   }
 
-  // Live speaking: the orb's own voice. A real audio source (mic / AI voice file) still shows through if louder.
+  // Live levels per state. With the mic or an AI voice file on, the orb follows that audio in Idle and Speaking.
+  // Without one (demo): Idle just breathes, calm, and Speaking runs a speech-like voice.
   function liveSpeak() {
-    const e = speechEnv(motionTime);
-    const k = speakAmt, lv = v => v + k * Math.max(0, 0.35 * e - v);
-    return { speak: k, speakT: motionTime, speakE: e,
-             level: lv(live.level), bass: lv(live.bass), mid: lv(live.mid), high: lv(live.high) };
+    const e = speechEnv(motionTime), k = speakAmt, real = listening();
+    const calm = 0.06 * (0.6 + 0.4 * Math.sin(motionTime * 0.9));
+    const lv = (v, f) => real ? v : (1 - k) * calm * f + k * 0.55 * e * f;
+    return { speak: k, speakE: e,
+             level: lv(live.level, 1), bass: lv(live.bass, 0.9), mid: lv(live.mid, 0.8), high: lv(live.high, 0.7) };
   }
   function drawGlass(m) {
     // Live, both clock sets are the same clock.
@@ -1235,16 +1209,14 @@
       if (A.m === 1) tt = t; else if (B.m === 1) tt = t - D;
       if (A.k === 1) ts = t; else if (B.k === 1) ts = t - D;
     }
-    // Snapped speech cadence: whole syllables, phrases and rings per loop.
-    const sp = P > 0 ? { syl: Math.max(1, Math.round(SPEECH.syl * P)) / P, phr: Math.max(1, Math.round(SPEECH.phr * P)) / P,
-                         ring: Math.max(1, Math.round(SPEECH.ring * P / TAU)) * TAU / P } : SPEECH;
-    const sc = ts * speed, e = speechEnv(sc, sp);
-    // Idle: a gentle periodic "voice" (whole cycles per L). Speaking: the orb's own speech drives the levels instead.
-    const k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
-    const vu = 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * tl / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * tl / L + 1.3));
-    const v = (1 - morph) * ((1 - speak) * vu + speak * 0.35 * e);
-    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6],
-                 speak, speakT: sc, speakE: e, sylF: sp.syl, phrF: sp.phr, ringW: sp.ring };
+    // Snapped speech cadence: whole syllables and phrases per loop (in real seconds, like the voice).
+    const sp = { syl: Math.max(1, Math.round(SPEECH.syl * L)) / L, phr: Math.max(1, Math.round(SPEECH.phr * L)) / L };
+    const e = speechEnv(ts, sp);
+    // Idle: calm, a slow breath (whole cycles per L). Speaking: the voice reaction, driven by the orb's own speech.
+    const kb = Math.max(1, Math.round(L * 0.14));
+    const calm = 0.06 * (0.6 + 0.4 * Math.sin(TAU * kb * tl / L));
+    const v = (1 - morph) * ((1 - speak) * calm + speak * 0.55 * e);
+    const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6], speak, speakE: e };
     if (P <= 0) return Object.assign(st, { timeL: 0, timeT: 0, rotL: 0, spinL: 0, flowL: 0, spinT: 0, flowT: 0, loopP: 0, loopFT: 0 });
     const lc = tl * speed, tc = tt * speed;
     const snap = (total, step, min = 0) => Math.max(min, Math.round(total / step)) * step;
