@@ -237,6 +237,12 @@
       <button type="button" data-export-to="error" aria-pressed="false">Error</button>
     </div>
   </div>
+  <div class="row" id="exportVoiceRow"><span>Idle</span>
+    <div class="theme" role="group" aria-label="Idle voice">
+      <button type="button" data-export-voice="silent" aria-pressed="true">Nobody talking</button>
+      <button type="button" data-export-voice="talking" aria-pressed="false">User talking</button>
+    </div>
+  </div>
   <div class="row"><span>Background</span>
     <div class="theme" role="group" aria-label="Background">
       <button type="button" data-export-bg="0" aria-pressed="true">Black</button>
@@ -1229,7 +1235,8 @@
     if (from === to) return L;
     return STATE[from].m === STATE[to].m ? L / 2 : MORPH_SECS;
   }
-  function clipState(from, to, t, L, speed, style) {
+  // userVoice: Idle shows a person talking into the mic (the voice reaction) instead of the calm breath.
+  function clipState(from, to, t, L, speed, style, userVoice = false) {
     const TAU = Math.PI * 2, P = L * speed, M = MORPH_SECS;
     const A = STATE[from], B = STATE[to];
     const D = clipLength(from, to, L);
@@ -1250,8 +1257,12 @@
     const e = speechEnv(ts, sp);
     // Idle: calm, a slow breath (whole cycles per L). Speaking: the voice reaction, driven by the orb's own speech.
     const kb = Math.max(1, Math.round(L * 0.14));
-    const calm = 0.06 * (0.6 + 0.4 * Math.sin(TAU * kb * tl / L));
-    const v = (1 - morph) * ((1 - speak) * calm + speak * 0.55 * e);
+    let idleV = 0.06 * (0.6 + 0.4 * Math.sin(TAU * kb * tl / L));
+    if (userVoice) { // the user talking: the same simulated voice the full loop uses (whole cycles per L)
+      const k1 = Math.max(1, Math.round(L * 0.5)), k2 = Math.max(2, Math.round(L * 1.6));
+      idleV = 0.32 * (0.55 + 0.45 * Math.sin(TAU * k1 * tl / L)) * (0.6 + 0.4 * Math.sin(TAU * k2 * tl / L + 1.3));
+    }
+    const v = (1 - morph) * ((1 - speak) * idleV + speak * 0.55 * e);
     const st = { level: v, bass: v * 0.9, mid: v * 0.8, high: v * 0.7, morph, fit: [0.6, 0.6], speak, speakE: e, gray };
     if (P <= 0) return Object.assign(st, { timeL: 0, timeT: 0, rotL: 0, spinL: 0, flowL: 0, spinT: 0, flowT: 0, loopP: 0, loopFT: 0 });
     const lc = tl * speed, tc = tt * speed;
@@ -1271,13 +1282,13 @@
   const TITLE = { idle: 'Idle', speaking: 'Speaking', thinking: 'Thinking', error: 'Error' };
 
   // clip: 'loop' (the full Idle -> Thinking -> Idle loop) or { from, to } (from === to: that state's loop).
-  async function exportClip({ size, fps, length, dot, bg }, style, clip, onProgress) {
+  async function exportClip({ size, fps, length, dot, bg, voice }, style, clip, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
     const W = size, H = size;
     const L = Math.round(length * fps) / fps;
     const N = Math.round((clip === 'loop' ? L : clipLength(clip.from, clip.to, L)) * fps);
     const speed = Number(speedInput.value);
-    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip.from, clip.to, t, L, speed, style);
+    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip.from, clip.to, t, L, speed, style, voice === 'talking');
     const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9'], { width: W, height: H });
     if (!codec) throw new Error('This browser cannot encode video. Try Chrome or Edge.');
     const isMp4 = codec === 'avc';
@@ -1350,7 +1361,7 @@
   const exportGo = document.getElementById('exportGo');
   const exportProg = document.getElementById('exportProg');
   const exportMsg = document.getElementById('exportMsg');
-  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0, clip: 'idle', from: 'idle', to: 'speaking' };
+  const exportOpts = { size: 1080, fps: 60, length: 8, dot: 2, bg: 0, clip: 'idle', from: 'idle', to: 'speaking', voice: 'silent' };
   const exportHint = document.getElementById('exportHint');
   function updateExportHint() {
     const o = exportOpts;
@@ -1365,9 +1376,12 @@
       : 'MP4 on pure black: in Figma set the layer blend mode to Screen and the black disappears.');
     document.getElementById('exportFromRow').hidden = o.clip !== 'transition';
     document.getElementById('exportToRow').hidden = o.clip !== 'transition';
+    // The Idle voice choice only matters when Idle is in the clip.
+    document.getElementById('exportVoiceRow').hidden = !(o.clip === 'idle' || o.clip === 'all'
+      || (o.clip === 'transition' && (o.from === 'idle' || o.to === 'idle')));
     exportGo.disabled = exporting || (o.clip === 'transition' && o.from === o.to);
   }
-  [['clip', 'exportClip'], ['from', 'exportFrom'], ['to', 'exportTo']].forEach(([key, attr]) => {
+  [['clip', 'exportClip'], ['from', 'exportFrom'], ['to', 'exportTo'], ['voice', 'exportVoice']].forEach(([key, attr]) => {
     const btns = exportDlg.querySelectorAll('[data-' + attr.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + ']');
     btns.forEach(b => b.addEventListener('click', () => {
       exportOpts[key] = b.dataset[attr];
@@ -1418,7 +1432,9 @@
         const a = document.createElement('a');
         a.href = URL.createObjectURL(res.blob);
         const dotTag = (style === 'dots' ? `-dots${o.dot}x` : '') + (o.bg === 1 ? '-white' : '');
-        const name = clip === 'loop' ? 'loop' : clip.from === clip.to ? clip.from : `${clip.from}-to-${clip.to}`;
+        const idleName = o.voice === 'talking' ? 'idle-listening' : 'idle';
+        const nm = x => x === 'idle' ? idleName : x;
+        const name = clip === 'loop' ? 'loop' : clip.from === clip.to ? nm(clip.from) : `${nm(clip.from)}-to-${nm(clip.to)}`;
         const len = clip === 'loop' ? o.length : +clipLength(clip.from, clip.to, o.length).toFixed(2);
         a.download = `voice-orb-${style}-${name}-${o.size}p${o.fps}-${len}s${dotTag}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
