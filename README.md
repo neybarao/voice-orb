@@ -23,3 +23,21 @@ await voiceOrb.useMicrophone();          // user voice -> Idle
 voiceOrb.attachAIVoice(audioEl);         // <audio>/<video> element or a MediaStream (e.g. WebRTC) -> Speaking
 voiceOrb.stopMicrophone();
 ```
+
+## Export code (integrar no app)
+
+O botão **Export code** baixa `voice-orb.js`: um web component `<voice-orb>` com as configurações atuais da página (estilo, tema, estado inicial, sensibilidade, tamanho, velocidade e, se quiser, uma cor de fundo igual à tela do app). Funciona em Ionic (Angular, React ou Vue) e no app nativo via Capacitor.
+
+```js
+import './assets/voice-orb.js';   // uma vez, ex.: main.ts
+// <voice-orb></voice-orb>         // atributos opcionais sobrescrevem: state, orb, theme, sens, size, speed, background
+const orb = document.querySelector('voice-orb');
+orb.state = 'thinking';
+await orb.useMicrophone();
+orb.attachAIVoice(audioEl);       // <audio> ou MediaStream
+orb.detachAIVoice(audioEl);
+orb.destroy();                    // libera o WebGL quando o orb sair de vez
+```
+
+- A lógica do componente fica em `orb-component.template.js`. Os shaders são copiados da página na hora do export, então o orb exportado desenha igual à página. Se mudar `advanceMorph`, `liveSpeak` ou o render na página, replique no template.
+- O export precisa da página servida por http (GitHub Pages ou `serve.command`), não por `file://`.

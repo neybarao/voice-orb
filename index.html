@@ -166,6 +166,10 @@
   .export .row.stack .theme { display: flex; }
   .export .row.stack .theme { flex-wrap: wrap; }
   .export .row.stack .theme button { flex: 1 1 22%; padding-inline: 6px; }
+  .export input[type="color"] { width: 40px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; cursor: pointer; }
+  .export dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 14px; font-size: 12px; }
+  .export dt { color: var(--muted); }
+  .export dd { margin: 0; font-family: var(--font-data); font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -186,6 +190,7 @@
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
   <button class="file" id="exportBtn" type="button">Export video</button>
+  <button class="file" id="codeBtn" type="button">Export code</button>
   <div class="theme" role="group" aria-label="Orb style">
     <button type="button" data-style-choice="dots" aria-pressed="true">Dots</button>
     <button type="button" data-style-choice="glass" aria-pressed="false">Glass</button>
@@ -281,6 +286,27 @@
   <div class="actions">
     <button class="file" type="button" id="exportClose">Close</button>
     <button class="go" type="button" id="exportGo">Export</button>
+  </div>
+</dialog>
+
+<dialog class="export" id="codeDlg" aria-labelledby="codeTitle">
+  <h2 id="codeTitle">Export code</h2>
+  <p>One file, <code>voice-orb.js</code>: a <code>&lt;voice-orb&gt;</code> web component with these settings built in. Works in Ionic (Angular, React or Vue) and in the native app.</p>
+  <dl id="codeSummary"></dl>
+  <div class="row"><span>Background</span>
+    <div class="theme" role="group" aria-label="Code background">
+      <button type="button" data-code-bg="theme" aria-pressed="true">Theme</button>
+      <button type="button" data-code-bg="custom" aria-pressed="false">Custom</button>
+    </div>
+  </div>
+  <div class="row" id="codeColorRow" hidden><span>Colour (match the app screen)</span>
+    <input type="color" id="codeColor" value="#070b14" aria-label="Background colour">
+  </div>
+  <output id="codeMsg" aria-live="polite"></output>
+  <div class="actions">
+    <button class="file" type="button" id="codeClose">Close</button>
+    <button class="file" type="button" id="codeCopy">Copy usage</button>
+    <button class="go" type="button" id="codeGo">Download</button>
   </div>
 </dialog>
 
@@ -1454,6 +1480,98 @@
       applyTheme(); // restores the theme's blend mode and clear colour
     }
   });
+
+  // ---- Export code: the live settings baked into a standalone <voice-orb> web component ----
+  // The component logic lives in orb-component.template.js; the shaders are copied from this page at export time,
+  // so the exported orb always draws exactly what the page draws.
+  const codeDlg = document.getElementById('codeDlg');
+  const codeMsg = document.getElementById('codeMsg');
+  const codeColor = document.getElementById('codeColor');
+  const codeOpts = { bg: 'theme' };
+  function codeConfig() {
+    return { orb: styleChoice, theme: themeChoice, state: stateChoice,
+             sens: Number(sensInput.value), size: Number(sizeInput.value), speed: Number(speedInput.value),
+             background: codeOpts.bg === 'custom' ? codeColor.value : null,
+             edges: BROKEN_EDGES ? 'broken' : 'solid', sat: GLASS_SAT };
+  }
+  function codeSummary(c) {
+    const cap = x => x[0].toUpperCase() + x.slice(1);
+    return [['Style', cap(c.orb)], ['Theme', cap(c.theme)], ['Starts in', TITLE[c.state]],
+            ['Sensitivity', c.sens.toFixed(1) + '×'], ['Size', Math.round(c.size * 100) + '%'], ['Speed', c.speed.toFixed(1) + '×'],
+            ['Background', c.background || 'theme colour']];
+  }
+  function showCodeSummary() {
+    const dl = document.getElementById('codeSummary');
+    dl.replaceChildren(...codeSummary(codeConfig()).flatMap(([k, v]) => {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v;
+      return [dt, dd];
+    }));
+    document.getElementById('codeColorRow').hidden = codeOpts.bg !== 'custom';
+  }
+  async function buildComponent() {
+    const res = await fetch('orb-component.template.js', { cache: 'no-store' });
+    if (!res.ok) throw new Error('component template not found (' + res.status + ')');
+    const tpl = await res.text();
+    const c = codeConfig();
+    const lit = v => /[`\\]|\$\{/.test(v) ? JSON.stringify(v) : '`' + v + '`';
+    const shaders = '{\n' + Object.entries({ vs, fs, gvs, gfs, postVs, blurFs, compFs })
+      .map(([k, v]) => '    ' + k + ': ' + lit(v)).join(',\n') + '\n  }';
+    const stamp = 'Exported ' + new Date().toISOString().slice(0, 10) + ' from ' + location.origin + location.pathname
+      + ' · ' + codeSummary(c).map(([k, v]) => k + ' ' + v).join(' · ');
+    const out = tpl.replace('__STAMP__', () => stamp)
+                   .replace('/*__CONFIG__*/null', () => JSON.stringify(c))
+                   .replace('/*__SHADERS__*/null', () => shaders);
+    if (out.includes('/*__')) throw new Error('component template is out of date');
+    return out;
+  }
+  const USAGE = `// 1. Copy voice-orb.js into the app (e.g. src/assets/) and load it once, e.g. in main.ts:
+import './assets/voice-orb.js';
+
+// 2. Put the tag where the orb goes (size it with CSS; it is square by default):
+<voice-orb></voice-orb>
+
+// 3. Drive it from your code:
+const orb = document.querySelector('voice-orb');
+orb.state = 'thinking';            // 'idle' | 'speaking' | 'thinking' | 'error'
+await orb.useMicrophone();         // user's voice -> Idle (call it from a tap)
+orb.attachAIVoice(audioElement);   // AI voice: <audio> element or MediaStream -> Speaking
+orb.stopMicrophone();
+
+// Ionic Angular: add CUSTOM_ELEMENTS_SCHEMA to the component that uses <voice-orb>.
+// Native (Capacitor): microphone permission in iOS Info.plist and the Android manifest.`;
+  codeDlg.querySelectorAll('[data-code-bg]').forEach((b, _, all) => b.addEventListener('click', () => {
+    codeOpts.bg = b.dataset.codeBg;
+    all.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    showCodeSummary();
+  }));
+  codeColor.addEventListener('input', showCodeSummary);
+  document.getElementById('codeBtn').addEventListener('click', () => {
+    codeMsg.textContent = '';
+    showCodeSummary();
+    codeDlg.showModal();
+  });
+  document.getElementById('codeClose').addEventListener('click', () => codeDlg.close());
+  document.getElementById('codeCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(USAGE); codeMsg.textContent = 'Usage copied.'; }
+    catch { codeMsg.textContent = 'Could not copy here. The same notes are at the top of voice-orb.js.'; }
+  });
+  document.getElementById('codeGo').addEventListener('click', async () => {
+    try {
+      saveSettings();
+      const src = await buildComponent();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      a.download = 'voice-orb.js';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      codeMsg.textContent = 'voice-orb.js downloaded (' + (src.length / 1024).toFixed(0) + ' KB).';
+    } catch (err) {
+      codeMsg.textContent = 'Export failed: ' + (err && err.message ? err.message : err)
+        + (location.protocol === 'file:' ? ' Open the page through serve.command.' : '');
+    }
+  });
+
   // ---- Programmatic control, for wiring the orb into a product ----
   //   voiceOrb.setState('idle' | 'speaking' | 'thinking' | 'error')  // eases over 1.4 s from wherever it is
   //   voiceOrb.state                                                  // current target state
