@@ -175,7 +175,7 @@
 <div class="bar" role="group" aria-label="Orb controls">
   <button class="mic" id="micBtn" type="button" aria-pressed="false"><span class="pulse"></span><span id="micLabel">Use microphone</span></button>
   <label class="slider" for="sens">Sensitivity <output id="sensOut">1.0×</output>
-    <input id="sens" type="range" min="0.3" max="3" step="0.1" value="1">
+    <input id="sens" type="range" min="0.3" max="6" step="0.1" value="1">
   </label>
   <label class="slider" for="size">Size <output id="sizeOut">100%</output>
     <input id="size" type="range" min="0.4" max="1.6" step="0.05" value="1">
@@ -1006,7 +1006,7 @@
     }
     const target = { level, bass, mid, high };
     for (const key in live) {
-      const v = Math.min(1.2, target[key] * k);
+      const v = Math.min(2.4, target[key] * k); // ceiling doubled (was 1.2) so loud sounds push the orb further
       live[key] += (v - live[key]) * (v > live[key] ? 0.45 : 0.07); // fast attack, slow release
     }
   }
