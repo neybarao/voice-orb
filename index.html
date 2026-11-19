@@ -554,6 +554,7 @@
   uniform float uTimeL, uTimeT, uSpinL, uSpinT, uFlowL, uFlowT;
   uniform float uLevel, uBass, uHigh, uMorph, uBreak;
   uniform float uLoopP, uLoopFT; // clip export: loop period of the time clocks and of uFlowT (0 = live / off)
+  uniform float uIntroOn, uIntroT; // opening: on while it plays, seconds since it started
   ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vN;
@@ -602,6 +603,27 @@
     return mix(sp, to, uMorph);
   }
 
+  // ---- Opening: a few glass beads on a line -> a glass voice waveform (~2 s) -> the orb ----
+  // The sphere is stretched along x and its cross-section given the waveform's radius, so the end is a clean
+  // un-stretch back into the sphere (ribbons inside keep their place). Returns the sphere untouched when off.
+  float introOpen(float u){ return smoothstep(0.0, 0.6, uIntroT - 0.6 - u * 0.35); }
+  vec3 introShape(vec3 p){
+    if (uIntroOn < 0.5) return p;
+    float T = uIntroT, H = 1.3;
+    float x = clamp(p.x, -1.0, 1.0) * H, u = abs(p.x);
+    float sq = sqrt(max(1.0 - p.x * p.x, 1e-4));
+    float env = pow(max(0.0, 1.0 - u * u), 0.55);
+    float lobes = 0.35 + 0.65 * abs(sin(abs(x) * 7.5 - uTimeL * 3.4)) * (0.75 + 0.25 * sin(x * 2.3 + uTimeL * 1.3));
+    float Rw = env * (0.05 + (0.2 + 0.8 * uLevel) * lobes);
+    float beads = pow(max(0.0, cos(x * 3.1415926 * 3.5)), 10.0) * smoothstep(0.0, 0.35, T - u * 0.5);
+    float Rb = 0.004 + 0.05 * beads * (0.6 + 0.4 * env);
+    float R = mix(Rb, Rw, introOpen(u));
+    vec3 w = vec3(x, p.y * R / sq, p.z * R / sq);
+    float mm = smoothstep(2.7, 4.1, T);
+    mm = mm * mm * (3.0 - 2.0 * mm);
+    return mix(w, p, mm);
+  }
+
   vec3 place(vec2 q, float k){
     vec3 p = k < -0.5 ? shellAt(q) : ribbonAt(q, k);
     float t = uTimeL, listen = 1.0 - uMorph;
@@ -615,6 +637,7 @@
     float breath = (wave(1.7, t, 0.0, uLoopP) + 0.6 * wave(2.93, t, 1.3, uLoopP) + 0.35 * wave(0.71, t, 2.1, uLoopP)) / 1.95;
     float wob = snoise(p * 0.55 + drift(vec3(0.2, -0.15, 0.17), t, uLoopP));
     p *= 1.0 + (0.02 * breath + 0.04 * wob) * uMorph;
+    p = introShape(p);
     return rotX(p, mix(0.0, 0.12, uMorph));
   }
 
@@ -641,6 +664,7 @@
     // Ribbon 3 only exists in the ring; all ribbons step back during the blob.
     float vis = k > 1.5 ? uMorph : 1.0;
     vVis = vis * (1.0 - 0.9 * sin(PI * uMorph));
+    if (uIntroOn > 0.5 && k > -0.5) vVis *= max(introOpen(abs(clamp(p.x / 1.3, -1.0, 1.0))), smoothstep(2.7, 3.4, uIntroT)); // silk only once the wave opens
     vZ = p.z;
     // Broken strokes: each edge of a band fades out along stretches of its length, and the gaps drift.
     float sa = q.x * TAU;
@@ -750,7 +774,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -954,7 +978,7 @@
   }));
   styleButtons.forEach(b => b.addEventListener('click', () => {
     styleChoice = b.dataset.styleChoice;
-    if (styleChoice === 'dots') playIntro();
+    playIntro();
     applyStyle();
     saveSettings();
   }));
@@ -1127,6 +1151,7 @@
     gl.uniform1f(GU.uSpinL, st.spinL); gl.uniform1f(GU.uSpinT, st.spinT);
     gl.uniform1f(GU.uFlowL, st.flowL); gl.uniform1f(GU.uFlowT, st.flowT);
     gl.uniform1f(GU.uLoopP, st.loopP || 0); gl.uniform1f(GU.uLoopFT, st.loopFT || 0);
+    gl.uniform1f(GU.uIntroOn, st.introOn || 0); gl.uniform1f(GU.uIntroT, st.introT || 0); // clip export: off
     setSpeak(GU, st);
     gl.uniform1f(GU.uLevel, st.level);
     gl.uniform1f(GU.uBass, st.bass);
@@ -1215,13 +1240,14 @@
   function drawGlass(m) {
     // Live, both clock sets are the same clock.
     const st = Object.assign({ timeL: motionTime, timeT: motionTime, spinL: spin, spinT: spin, flowL: flow, flowT: flow,
-                 morph: m, fit: liveFit }, liveSpeak());
+                 morph: m, fit: liveFit, introOn: introT < INTRO_END ? 1 : 0, introT }, liveSpeak());
     if (isLight) { gl.useProgram(gprog); gl.uniform1f(GU.uLight, 1); renderGlass(st, null); return; }
     renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
 
-  // Opening (Dots): a few dots open into a voice waveform, then fold into the orb. Plays on load, when Dots is
-  // picked, from Play intro and from voiceOrb.playIntro(). Skipped with reduced motion.
+  // Opening: Dots: a few dots open into a voice waveform, then fold into the orb. Glass: a few glass beads swell
+  // into a glass voice waveform, then round off into the orb. Plays on load, when a style is picked, from Play intro
+  // and from voiceOrb.playIntro(). Skipped with reduced motion.
   const INTRO_END = 4.1;
   let introT = reduceMotion ? INTRO_END : 0;
   function playIntro() { introT = reduceMotion ? INTRO_END : 0; }
@@ -1239,9 +1265,9 @@
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     const m = advanceMorph(dt, speed);
+    introT = Math.min(INTRO_END, introT + dt);
     if (styleChoice === 'glass') drawGlass(m);
     else {
-      introT = Math.min(INTRO_END, introT + dt);
       renderDots(Object.assign({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
                       fit: liveFit, introOn: introT < INTRO_END ? 1 : 0, introT }, liveSpeak()), null, canvas.width, canvas.height, dpr);
     }
@@ -1633,7 +1659,7 @@ orb.stopMicrophone();
       saveSettings();
     },
     get state() { return stateChoice; },
-    playIntro,                                                      // Dots: replay the opening (dots -> waveform -> orb)
+    playIntro,                                                      // replay the opening (dots / beads -> waveform -> orb)
     useMicrophone: startMic,
     stopMicrophone: stopMic,
     attachAIVoice,
