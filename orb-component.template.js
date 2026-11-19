@@ -15,6 +15,8 @@
  *   await orb.useMicrophone();                       // user's voice -> drives Idle (call from a tap on iOS)
  *   orb.stopMicrophone();
  *   orb.attachAIVoice(audioElOrMediaStream);         // assistant's voice -> drives Speaking
+ *   orb.playIntro();                                 // Dots: replay the opening (a few dots -> voice waveform -> orb, ~4 s)
+ *   <voice-orb intro="off"></voice-orb>              // the opening plays when the element first appears; this skips it
  *
  * ---- Size ----
  *   The orb fills the element. Default is width 100% and square; set width/height in CSS to change it.
@@ -39,6 +41,7 @@
   const MERIDIANS = 140, PER_LINE = 110, COUNT = MERIDIANS * PER_LINE;
   const RIBBONS = 3, RIB_ALONG = 320, RIB_ACROSS = 24, SH_U = 160, SH_V = 80;
   const MORPH_SECS = 1.4;
+  const INTRO_END = 4.1; // opening length in seconds (Dots)
   const SPEECH = { syl: 4.2, phr: 0.3 };
   const BG = { dark: [0.027, 0.043, 0.078], light: [0.953, 0.961, 0.976] };
   const SILENT = { level: 0, bass: 0, mid: 0, high: 0 };
@@ -104,8 +107,12 @@
       if (name === 'size') this._resize();
     }
 
+    // Replay the opening (Dots): a few dots open into a voice waveform, then fold into the orb.
+    playIntro() { this._introT = this._reduceMotion ? INTRO_END : 0; }
+
     connectedCallback() {
       if (!this.gl && !this._init()) return;
+      if (this._introT == null) this._introT = this.getAttribute('intro') === 'off' || this._reduceMotion ? INTRO_END : 0;
       this._state = this._initialState();
       this._ro = new ResizeObserver(() => this._resize());
       this._ro.observe(this);
@@ -173,7 +180,7 @@
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
       this.U = {};
-      ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray'].forEach(n => this.U[n] = gl.getUniformLocation(this.prog, n));
+      ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => this.U[n] = gl.getUniformLocation(this.prog, n));
 
       // Glass
       this.gprog = program(SH.gvs, SH.gfs);
@@ -413,8 +420,9 @@
                                    morph: m, fit: this._fit }, this._liveSpeak());
         this._renderGlass(st, this._light ? null : this.rt, W, H);
       } else {
+        this._introT = Math.min(INTRO_END, this._introT + dt);
         this._renderDots(Object.assign({ timeL: t, timeT: t, rotL: this._rot, spinT: this._spin, flowT: this._flow, morph: m,
-                                         fit: this._fit }, this._liveSpeak()), W, H);
+                                         fit: this._fit, introOn: this._introT < INTRO_END ? 1 : 0, introT: this._introT }, this._liveSpeak()), W, H);
       }
     }
 
@@ -427,6 +435,7 @@
       gl.uniform1f(U.uMorph, st.morph);
       gl.uniform1f(U.uLoopP, 0);
       this._setSpeak(U, st);
+      gl.uniform1f(U.uIntroOn, st.introOn || 0); gl.uniform1f(U.uIntroT, st.introT || 0);
       gl.uniform1f(U.uLevel, st.level); gl.uniform1f(U.uBass, st.bass); gl.uniform1f(U.uMid, st.mid); gl.uniform1f(U.uHigh, st.high);
       gl.uniform2f(U.uFit, st.fit[0], st.fit[1]);
       gl.uniform1f(U.uDpr, this._dpr);

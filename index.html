@@ -189,6 +189,7 @@
   </label>
   <label class="file" for="voiceFile">AI voice<input id="voiceFile" type="file" accept="audio/*"></label>
   <button class="file" id="copyLink" type="button">Copy link</button>
+  <button class="file" id="introBtn" type="button">Play intro</button>
   <button class="file" id="exportBtn" type="button">Export video</button>
   <button class="file" id="codeBtn" type="button">Export code</button>
   <div class="theme" role="group" aria-label="Orb style">
@@ -358,6 +359,8 @@
   uniform float uLevel, uBass, uMid, uHigh, uPass, uDpr, uLight;
   // Clip export only: the period (in clock units) after which every motion repeats exactly. 0 = live / off.
   uniform float uLoopP, uGray;
+  // Opening (Dots): uIntroOn = 1 while it plays, uIntroT = seconds since it started.
+  uniform float uIntroOn, uIntroT;
   ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vColor;
@@ -442,6 +445,36 @@
                    snoise(dir * 1.7 + vec3(31.0, t * 0.3, 0.0)));
     p = q;
 
+    // ---- Opening: a few dots -> a voice waveform (~2 s) -> the orb ----
+    // Each meridian is one vertical strand of the waveform, so strands fold straight into meridians at the end.
+    float introW = 0.0, introA = 1.0, grow = 1.0;
+    vec3 wcol = vec3(0.0);
+    if (uIntroOn > 0.5) {
+      float T = uIntroT;
+      float x = (aUV.x - 0.5) * 2.7;
+      float centre = 1.0 - abs(aUV.x - 0.5) * 2.0;
+      float few = step(mod(floor(aUV.x * 140.0 + 0.5), 12.0), 0.5); // the first few dots: every 12th strand
+      float firstDots = few * smoothstep(0.0, 0.3, T - abs(x) * 0.12);
+      float join = smoothstep(0.0, 0.3, T - 0.55 - (1.0 - centre) * 0.4);
+      grow = smoothstep(0.0, 0.6, T - 0.6 - (1.0 - centre) * 0.3);
+      float env = exp(-x * x * 0.9);
+      float voice = uLevel + 0.6 * uMid;
+      float A = env * (0.05 + 0.17 * abs(sin(abs(x) * 6.5 - t * 4.0)) * (0.6 + 0.4 * sin(x * 2.3 + t * 1.7))
+                       + 0.55 * voice * (0.6 + 0.4 * abs(sin(x * 9.0 - t * 6.0))));
+      vec3 wp = vec3(x, A * grow * (1.0 - 2.0 * aUV.y), 0.0);
+      float mm = smoothstep(2.7, 4.1, T); // waveform -> orb, same scatter as the state morph
+      mm = mm * mm * (3.0 - 2.0 * mm);
+      wp = mix(wp, p, mm) + 0.1 * sin(3.1415926 * mm) * vec3(snoise(dir * 1.7 + vec3(T * 0.3, 0.0, 0.0)),
+                                                              snoise(dir * 1.7 + vec3(0.0, 17.0, T * 0.3)),
+                                                              snoise(dir * 1.7 + vec3(31.0, T * 0.3, 0.0)));
+      p = wp;
+      introW = 1.0 - mm;
+      introA = mix(max(firstDots, join), 1.0, mm);
+      vec3 wCool = mix(vec3(0.30, 0.56, 1.0), vec3(0.16, 0.38, 0.88), uLight);
+      vec3 wWarm = mix(vec3(1.0, 0.36, 0.20), vec3(0.89, 0.26, 0.14), uLight);
+      wcol = mix(wCool, wWarm, smoothstep(-1.2, 1.2, x));
+    }
+
     float d = 3.6;
     gl_Position = vec4(p.x * uFit.x * d, p.y * uFit.y * d, 0.0, d - p.z);
 
@@ -460,6 +493,9 @@
 
     float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
     a *= 1.0 + 0.35 * uSpeak * listen * uSpeakE; // speaking glows a little with each word
+    // Opening: waveform colour left (cool) to right (warm); a folded strand stacks its dots, so each is faint.
+    col = mix(col, wcol, introW);
+    a = mix(a, 0.85 * mix(0.025, 1.0, grow), introW) * introA;
     col = mix(col, vec3(dot(col, vec3(0.299, 0.587, 0.114)) * 1.15), uGray); // error: black and white
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
@@ -501,7 +537,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -918,6 +954,7 @@
   }));
   styleButtons.forEach(b => b.addEventListener('click', () => {
     styleChoice = b.dataset.styleChoice;
+    if (styleChoice === 'dots') playIntro();
     applyStyle();
     saveSettings();
   }));
@@ -1183,6 +1220,12 @@
     renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
 
+  // Opening (Dots): a few dots open into a voice waveform, then fold into the orb. Plays on load, when Dots is
+  // picked, from Play intro and from voiceOrb.playIntro(). Skipped with reduced motion.
+  const INTRO_END = 4.1;
+  let introT = reduceMotion ? INTRO_END : 0;
+  function playIntro() { introT = reduceMotion ? INTRO_END : 0; }
+
   let exporting = false;
   function frame(now) {
     if (exporting) { last = now; requestAnimationFrame(frame); return; }
@@ -1197,8 +1240,11 @@
     gl.clear(gl.COLOR_BUFFER_BIT);
     const m = advanceMorph(dt, speed);
     if (styleChoice === 'glass') drawGlass(m);
-    else renderDots(Object.assign({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
-                      fit: liveFit }, liveSpeak()), null, canvas.width, canvas.height, dpr);
+    else {
+      introT = Math.min(INTRO_END, introT + dt);
+      renderDots(Object.assign({ timeL: motionTime, timeT: motionTime, rotL: rot, spinT: spin, flowT: flow, morph: m,
+                      fit: liveFit, introOn: introT < INTRO_END ? 1 : 0, introT }, liveSpeak()), null, canvas.width, canvas.height, dpr);
+    }
     const vals = [live.bass, live.mid, live.high, live.level];
     bars.forEach((b, i) => { b.style.height = (2 + Math.min(1, vals[i]) * 10) + 'px'; });
     requestAnimationFrame(frame);
@@ -1215,6 +1261,7 @@
     gl.uniform1f(U.uMorph, st.morph);
     gl.uniform1f(U.uLoopP, st.loopP || 0);
     setSpeak(U, st);
+    gl.uniform1f(U.uIntroOn, st.introOn || 0); gl.uniform1f(U.uIntroT, st.introT || 0); // clip export: off
     gl.uniform1f(U.uLevel, st.level);
     gl.uniform1f(U.uBass, st.bass);
     gl.uniform1f(U.uMid, st.mid);
@@ -1586,10 +1633,12 @@ orb.stopMicrophone();
       saveSettings();
     },
     get state() { return stateChoice; },
+    playIntro,                                                      // Dots: replay the opening (dots -> waveform -> orb)
     useMicrophone: startMic,
     stopMicrophone: stopMic,
     attachAIVoice,
   };
+  document.getElementById('introBtn').addEventListener('click', playIntro);
   requestAnimationFrame(frame);
 })();
 </script>
