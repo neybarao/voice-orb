@@ -15,7 +15,7 @@
  *   await orb.useMicrophone();                       // user's voice -> drives Idle (call from a tap on iOS)
  *   orb.stopMicrophone();
  *   orb.attachAIVoice(audioElOrMediaStream);         // assistant's voice -> drives Speaking
- *   orb.playIntro();                                 // replay the opening (the orb spins up from small, ~2.4 s)
+ *   orb.playIntro();                                 // replay the opening (the orb spins up from small, ~1.4 s)
  *   <voice-orb intro="off"></voice-orb>              // the opening plays when the element first appears; this skips it
  *
  * ---- Size ----
@@ -41,7 +41,7 @@
   const MERIDIANS = 140, PER_LINE = 110, COUNT = MERIDIANS * PER_LINE;
   const RIBBONS = 3, RIB_ALONG = 320, RIB_ACROSS = 24, SH_U = 160, SH_V = 80;
   const MORPH_SECS = 1.4;
-  const INTRO_END = 2.4; // opening length in seconds
+  const INTRO_END = 1.4; // opening length in seconds
   const SPEECH = { syl: 4.2, phr: 0.3 };
   const BG = { dark: [0.027, 0.043, 0.078], light: [0.953, 0.961, 0.976] };
   const SILENT = { level: 0, bass: 0, mid: 0, high: 0 };

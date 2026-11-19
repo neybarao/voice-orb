@@ -225,6 +225,7 @@
       <button type="button" data-export-clip="transition" aria-pressed="false">Transition</button>
       <button type="button" data-export-clip="all" aria-pressed="false">All 4 states</button>
       <button type="button" data-export-clip="loop" aria-pressed="false">Full loop</button>
+      <button type="button" data-export-clip="intro" aria-pressed="false">Intro</button>
     </div>
   </div>
   <div class="row" id="exportFromRow" hidden><span>From</span>
@@ -449,7 +450,7 @@
 
     // ---- Opening: the orb starts small and spins up to its full size ----
     if (uIntroOn > 0.5) {
-      float ik = clamp(uIntroT / 2.4, 0.0, 1.0);
+      float ik = clamp(uIntroT / 1.4, 0.0, 1.0);
       float ie = 1.0 - pow(1.0 - ik, 3.0);
       float turn = (1.0 - ie) * 7.0; // what is left to turn, in radians
       float ic = cos(turn), is = sin(turn);
@@ -584,7 +585,7 @@
   // ---- Opening: the orb starts small and spins up to its full size (returns p untouched when off) ----
   vec3 introShape(vec3 p){
     if (uIntroOn < 0.5) return p;
-    float k = clamp(uIntroT / 2.4, 0.0, 1.0);
+    float k = clamp(uIntroT / 1.4, 0.0, 1.0);
     float e = 1.0 - pow(1.0 - k, 3.0);
     p = rotY(p, (1.0 - e) * 7.0) * mix(0.04, 1.0, e);
     return rotZ(p, (1.0 - e) * 0.6);
@@ -1216,9 +1217,9 @@
     renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
 
-  // Opening: the orb starts small and spins up to its full size (~2.4 s). Plays on load, when a style is picked,
+  // Opening: the orb starts small and spins up to its full size (~1.4 s). Plays on load, when a style is picked,
   // from Play intro and from voiceOrb.playIntro(). Skipped with reduced motion.
-  const INTRO_END = 2.4;
+  const INTRO_END = 1.4;
   let introT = reduceMotion ? INTRO_END : 0;
   function playIntro() { introT = reduceMotion ? INTRO_END : 0; }
 
@@ -1350,14 +1351,19 @@
   }
   const TITLE = { idle: 'Idle', speaking: 'Speaking', thinking: 'Thinking', error: 'Error' };
 
-  // clip: 'loop' (the full Idle -> Thinking -> Idle loop) or { from, to } (from === to: that state's loop).
+  // clip: 'loop' (the full Idle -> Thinking -> Idle loop), 'intro' (the opening, then a moment of Idle; plays once)
+  // or { from, to } (from === to: that state's loop).
+  const INTRO_HOLD = 1; // seconds of Idle after the opening in the Intro clip
   async function exportClip({ size, fps, length, dot, bg, voice }, style, clip, onProgress) {
     const MB = await import('./vendor/mediabunny.min.mjs');
     const W = size, H = size;
     const L = Math.round(length * fps) / fps;
-    const N = Math.round((clip === 'loop' ? L : clipLength(clip.from, clip.to, L)) * fps);
+    const N = Math.round((clip === 'loop' ? L : clip === 'intro' ? INTRO_END + INTRO_HOLD : clipLength(clip.from, clip.to, L)) * fps);
     const speed = Number(speedInput.value);
-    const stateAt = clip === 'loop' ? t => loopState(t, L, speed) : t => clipState(clip.from, clip.to, t, L, speed, style, voice === 'talking');
+    const stateAt = clip === 'loop' ? t => loopState(t, L, speed)
+      : clip === 'intro' ? t => Object.assign(clipState('idle', 'idle', t, L, speed, style, voice === 'talking'),
+                                              { introOn: t < INTRO_END ? 1 : 0, introT: t })
+      : t => clipState(clip.from, clip.to, t, L, speed, style, voice === 'talking');
     const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9'], { width: W, height: H });
     if (!codec) throw new Error('This browser cannot encode video. Try Chrome or Edge.');
     const isMp4 = codec === 'avc';
@@ -1439,6 +1445,7 @@
         : `${TITLE[o.from]} → ${TITLE[o.to]}, ${+clipLength(o.from, o.to, o.length).toFixed(2)} s, plays once. It starts on the first frame of the ${TITLE[o.from]} loop and ends where the ${TITLE[o.to]} loop begins.`)
       : o.clip === 'all' ? 'Four files: Idle, Speaking, Thinking and Error loops.'
       : o.clip === 'loop' ? 'Idle → Thinking → Idle, seamless loop.'
+      : o.clip === 'intro' ? `The opening: the orb spins up from small into Idle, ${INTRO_END + INTRO_HOLD} s, plays once.`
       : `${TITLE[o.clip]} on its own, seamless loop.`;
     exportHint.textContent = what + ' ' + (o.bg === 1
       ? 'MP4 on pure white: in Figma set the layer blend mode to Multiply and the white disappears.'
@@ -1446,7 +1453,7 @@
     document.getElementById('exportFromRow').hidden = o.clip !== 'transition';
     document.getElementById('exportToRow').hidden = o.clip !== 'transition';
     // The Idle voice choice only matters when Idle is in the clip.
-    document.getElementById('exportVoiceRow').hidden = !(o.clip === 'idle' || o.clip === 'all'
+    document.getElementById('exportVoiceRow').hidden = !(o.clip === 'idle' || o.clip === 'all' || o.clip === 'intro'
       || (o.clip === 'transition' && (o.from === 'idle' || o.to === 'idle')));
     exportGo.disabled = exporting || (o.clip === 'transition' && o.from === o.to);
   }
@@ -1485,7 +1492,7 @@
     try {
       const style = styleChoice;
       const o = exportOpts;
-      const clips = o.clip === 'loop' ? ['loop']
+      const clips = o.clip === 'loop' ? ['loop'] : o.clip === 'intro' ? ['intro']
                   : o.clip === 'all' ? ['idle', 'speaking', 'thinking', 'error'].map(x => ({ from: x, to: x }))
                   : o.clip === 'transition' ? [{ from: o.from, to: o.to }] : [{ from: o.clip, to: o.clip }];
       let bytes = 0, ext = 'mp4';
@@ -1503,8 +1510,8 @@
         const dotTag = (style === 'dots' ? `-dots${o.dot}x` : '') + (o.bg === 1 ? '-white' : '');
         const idleName = o.voice === 'talking' ? 'idle-listening' : 'idle';
         const nm = x => x === 'idle' ? idleName : x;
-        const name = clip === 'loop' ? 'loop' : clip.from === clip.to ? nm(clip.from) : `${nm(clip.from)}-to-${nm(clip.to)}`;
-        const len = clip === 'loop' ? o.length : +clipLength(clip.from, clip.to, o.length).toFixed(2);
+        const name = clip === 'loop' ? 'loop' : clip === 'intro' ? 'intro' : clip.from === clip.to ? nm(clip.from) : `${nm(clip.from)}-to-${nm(clip.to)}`;
+        const len = clip === 'loop' ? o.length : clip === 'intro' ? INTRO_END + INTRO_HOLD : +clipLength(clip.from, clip.to, o.length).toFixed(2);
         a.download = `voice-orb-${style}-${name}-${o.size}p${o.fps}-${len}s${dotTag}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 60000);
