@@ -361,6 +361,8 @@
   uniform float uLoopP, uGray;
   // Opening (Dots): uIntroOn = 1 while it plays, uIntroT = seconds since it started.
   uniform float uIntroOn, uIntroT;
+  // Who is talking: -1 = the AI (bluer), +1 = the user (redder), 0 = nobody.
+  uniform float uHue;
   ${SPEAK_GLSL}
   uniform vec2 uFit;
   out vec3 vColor;
@@ -445,34 +447,13 @@
                    snoise(dir * 1.7 + vec3(31.0, t * 0.3, 0.0)));
     p = q;
 
-    // ---- Opening: a few dots -> a voice waveform (~2 s) -> the orb ----
-    // Each meridian is one vertical strand of the waveform, so strands fold straight into meridians at the end.
-    float introW = 0.0, introA = 1.0, grow = 1.0;
-    vec3 wcol = vec3(0.0);
+    // ---- Opening: the orb starts small and spins up to its full size ----
     if (uIntroOn > 0.5) {
-      float T = uIntroT;
-      float x = (aUV.x - 0.5) * 2.7;
-      float centre = 1.0 - abs(aUV.x - 0.5) * 2.0;
-      float few = step(mod(floor(aUV.x * 140.0 + 0.5), 12.0), 0.5); // the first few dots: every 12th strand
-      float firstDots = few * smoothstep(0.0, 0.3, T - abs(x) * 0.12);
-      float join = smoothstep(0.0, 0.3, T - 0.55 - (1.0 - centre) * 0.4);
-      grow = smoothstep(0.0, 0.6, T - 0.6 - (1.0 - centre) * 0.3);
-      float env = exp(-x * x * 0.9);
-      float voice = uLevel + 0.6 * uMid;
-      float A = env * (0.05 + 0.17 * abs(sin(abs(x) * 6.5 - t * 4.0)) * (0.6 + 0.4 * sin(x * 2.3 + t * 1.7))
-                       + 0.55 * voice * (0.6 + 0.4 * abs(sin(x * 9.0 - t * 6.0))));
-      vec3 wp = vec3(x, A * grow * (1.0 - 2.0 * aUV.y), 0.0);
-      float mm = smoothstep(2.7, 4.1, T); // waveform -> orb, same scatter as the state morph
-      mm = mm * mm * (3.0 - 2.0 * mm);
-      wp = mix(wp, p, mm) + 0.1 * sin(3.1415926 * mm) * vec3(snoise(dir * 1.7 + vec3(T * 0.3, 0.0, 0.0)),
-                                                              snoise(dir * 1.7 + vec3(0.0, 17.0, T * 0.3)),
-                                                              snoise(dir * 1.7 + vec3(31.0, T * 0.3, 0.0)));
-      p = wp;
-      introW = 1.0 - mm;
-      introA = mix(max(firstDots, join), 1.0, mm);
-      vec3 wCool = mix(vec3(0.30, 0.56, 1.0), vec3(0.16, 0.38, 0.88), uLight);
-      vec3 wWarm = mix(vec3(1.0, 0.36, 0.20), vec3(0.89, 0.26, 0.14), uLight);
-      wcol = mix(wCool, wWarm, smoothstep(-1.2, 1.2, x));
+      float ik = clamp(uIntroT / 2.4, 0.0, 1.0);
+      float ie = 1.0 - pow(1.0 - ik, 3.0);
+      float turn = (1.0 - ie) * 7.0; // what is left to turn, in radians
+      float ic = cos(turn), is = sin(turn);
+      p = vec3(ic * p.x + is * p.z, p.y, -is * p.x + ic * p.z) * mix(0.04, 1.0, ie);
     }
 
     float d = 3.6;
@@ -486,16 +467,13 @@
     // Screen-fixed gradient: warm on top, cool at the bottom.
     vec3 warm = mix(vec3(1.0, 0.36, 0.20), vec3(0.89, 0.26, 0.14), uLight);
     vec3 cool = mix(vec3(0.30, 0.56, 1.0), vec3(0.16, 0.38, 0.88), uLight);
-    vec3 col = mix(cool, warm, smoothstep(-0.85, 0.85, p.y));
+    vec3 col = mix(cool, warm, smoothstep(-0.85, 0.85, p.y + 0.75 * uHue));
     // Dark: the rim burns toward white. Light: it deepens instead, since glow can't brighten a white page.
     vec3 hot = mix(vec3(1.0, 0.94, 0.9), col * 0.62, uLight);
     col = mix(col, hot, pow(rim, 6.0) * (0.55 + 0.4 * uLevel));
 
     float a = (0.12 + 0.88 * edge + 0.2 * uLevel * edge) * mix(1.0, 0.7, m); // the ring packs the dots tighter
     a *= 1.0 + 0.35 * uSpeak * listen * uSpeakE; // speaking glows a little with each word
-    // Opening: waveform colour left (cool) to right (warm); a folded strand stacks its dots, so each is faint.
-    col = mix(col, wcol, introW);
-    a = mix(a, 0.85 * mix(0.025, 1.0, grow), introW) * introA;
     col = mix(col, vec3(dot(col, vec3(0.299, 0.587, 0.114)) * 1.15), uGray); // error: black and white
     vColor = col;
     vAlpha = uPass < 0.5 ? a : a * mix(0.07, 0.035, uLight);
@@ -537,7 +515,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT','uHue'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   // ---- Glass orb: a translucent shell plus three silk ribbons, drawn as plain triangle meshes ----
   // Listening = glass sphere with two wide silk bands inside.
@@ -603,25 +581,13 @@
     return mix(sp, to, uMorph);
   }
 
-  // ---- Opening: a few glass beads on a line -> a glass voice waveform (~2 s) -> the orb ----
-  // The sphere is stretched along x and its cross-section given the waveform's radius, so the end is a clean
-  // un-stretch back into the sphere (ribbons inside keep their place). Returns the sphere untouched when off.
-  float introOpen(float u){ return smoothstep(0.0, 0.6, uIntroT - 0.6 - u * 0.35); }
+  // ---- Opening: the orb starts small and spins up to its full size (returns p untouched when off) ----
   vec3 introShape(vec3 p){
     if (uIntroOn < 0.5) return p;
-    float T = uIntroT, H = 1.3;
-    float x = clamp(p.x, -1.0, 1.0) * H, u = abs(p.x);
-    float sq = sqrt(max(1.0 - p.x * p.x, 1e-4));
-    float env = pow(max(0.0, 1.0 - u * u), 0.55);
-    float lobes = 0.35 + 0.65 * abs(sin(abs(x) * 7.5 - uTimeL * 3.4)) * (0.75 + 0.25 * sin(x * 2.3 + uTimeL * 1.3));
-    float Rw = env * (0.05 + (0.2 + 0.8 * uLevel) * lobes);
-    float beads = pow(max(0.0, cos(x * 3.1415926 * 3.5)), 10.0) * smoothstep(0.0, 0.35, T - u * 0.5);
-    float Rb = 0.004 + 0.05 * beads * (0.6 + 0.4 * env);
-    float R = mix(Rb, Rw, introOpen(u));
-    vec3 w = vec3(x, p.y * R / sq, p.z * R / sq);
-    float mm = smoothstep(2.7, 4.1, T);
-    mm = mm * mm * (3.0 - 2.0 * mm);
-    return mix(w, p, mm);
+    float k = clamp(uIntroT / 2.4, 0.0, 1.0);
+    float e = 1.0 - pow(1.0 - k, 3.0);
+    p = rotY(p, (1.0 - e) * 7.0) * mix(0.04, 1.0, e);
+    return rotZ(p, (1.0 - e) * 0.6);
   }
 
   vec3 place(vec2 q, float k){
@@ -664,7 +630,6 @@
     // Ribbon 3 only exists in the ring; all ribbons step back during the blob.
     float vis = k > 1.5 ? uMorph : 1.0;
     vVis = vis * (1.0 - 0.9 * sin(PI * uMorph));
-    if (uIntroOn > 0.5 && k > -0.5) vVis *= max(introOpen(abs(clamp(p.x / 1.3, -1.0, 1.0))), smoothstep(2.7, 3.4, uIntroT)); // silk only once the wave opens
     vZ = p.z;
     // Broken strokes: each edge of a band fades out along stretches of its length, and the gaps drift.
     float sa = q.x * TAU;
@@ -683,13 +648,14 @@
   const gfs = `#version 300 es
   precision highp float;
   uniform float uLight, uLevel, uMorph, uSpeak, uSpeakE, uGray;
+  uniform float uHue; // who is talking: -1 the AI (bluer), +1 the user (redder)
   in vec3 vN;
   in vec2 vS;
   in float vW, vK, vVis, vZ, vGapA, vGapB, vGapT;
   out vec4 outColor;
   vec3 grad(vec2 s){
     // Left half blue (cyan up top), right half red, violet only in the seam, pink along the bottom.
-    float g = clamp(0.5 + 0.6 * dot(s, vec2(0.96, -0.28)), 0.0, 1.0);
+    float g = clamp(0.5 + 0.6 * dot(s, vec2(0.96, -0.28)) + 0.3 * uHue, 0.0, 1.0);
     vec3 c0 = vec3(0.22, 0.58, 1.0), c1 = vec3(0.08, 0.26, 1.0), c2 = vec3(0.55, 0.16, 0.88);
     vec3 c3 = vec3(1.0, 0.14, 0.12), c4 = vec3(1.0, 0.22, 0.14);
     vec3 c = g < 0.38 ? mix(c0, c1, g / 0.38)
@@ -774,7 +740,7 @@
   gl.bindVertexArray(vao);
 
   const GU = {};
-  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
+  ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT','uHue'].forEach(n => GU[n] = gl.getUniformLocation(gprog, n));
   // ?edges=solid brings back continuous ribbon edges (the look before broken strokes).
   const BROKEN_EDGES = new URLSearchParams(location.search).get('edges') !== 'solid';
   // ?sat= tunes colour saturation in dark theme (1 = none added, default 1.45).
@@ -1200,6 +1166,7 @@
     gl.uniform1f(L.uSpeak, st.speak || 0);
     gl.uniform1f(L.uSpeakE, st.speakE || 0);
     gl.uniform1f(L.uGray, st.gray || 0);
+    gl.uniform1f(L.uHue, st.hue || 0);
   }
   // Shared by both styles: eased morph 0 (Idle sphere) -> 1 (Thinking ring), plus the Thinking spin/flow clocks.
   // Speaking keeps the sphere and fades its voice in over the same 1.4 s; Error is the ring fading to black and white.
@@ -1225,6 +1192,8 @@
   // Live levels per state. With the mic or an AI voice file on, the orb follows that audio in Idle and Speaking.
   // Without one (demo): Idle just breathes, calm, and Speaking runs a speech-like voice.
   // Idle follows the mic (calm breath when it's off); Speaking follows the AI voice (demo speech when none plays).
+  // Who is talking, for the colour: the AI in Speaking pulls toward blue; the user's voice in Idle pulls toward red.
+  let userTalk = 0;
   function liveSpeak() {
     const k = speakAmt, ai = aiOn(), user = userOn();
     const e = ai ? Math.min(1, liveAI.level * 1.6) : speechEnv(motionTime); // swell / glow per word
@@ -1235,7 +1204,9 @@
       const a = ai ? liveAI[key] : 0.55 * e * f[key];
       live[key] = (1 - k) * u + k * a;
     }
-    return { speak: k, speakE: e, gray: grayAmt, level: live.level, bass: live.bass, mid: live.mid, high: live.high };
+    userTalk += ((user ? Math.min(1, liveUser.level * 2.5) : 0) - userTalk) * 0.08;
+    const hue = (1 - k) * userTalk - k;
+    return { speak: k, speakE: e, gray: grayAmt, hue, level: live.level, bass: live.bass, mid: live.mid, high: live.high };
   }
   function drawGlass(m) {
     // Live, both clock sets are the same clock.
@@ -1245,10 +1216,9 @@
     renderGlass(st, { scene: rtScene, a: rtA, b: rtB }, null, canvas.width, canvas.height, DARK_BG, false);
   }
 
-  // Opening: Dots: a few dots open into a voice waveform, then fold into the orb. Glass: a few glass beads swell
-  // into a glass voice waveform, then round off into the orb. Plays on load, when a style is picked, from Play intro
-  // and from voiceOrb.playIntro(). Skipped with reduced motion.
-  const INTRO_END = 4.1;
+  // Opening: the orb starts small and spins up to its full size (~2.4 s). Plays on load, when a style is picked,
+  // from Play intro and from voiceOrb.playIntro(). Skipped with reduced motion.
+  const INTRO_END = 2.4;
   let introT = reduceMotion ? INTRO_END : 0;
   function playIntro() { introT = reduceMotion ? INTRO_END : 0; }
 
@@ -1659,7 +1629,7 @@ orb.stopMicrophone();
       saveSettings();
     },
     get state() { return stateChoice; },
-    playIntro,                                                      // replay the opening (dots / beads -> waveform -> orb)
+    playIntro,                                                      // replay the opening (small orb spins up to full size)
     useMicrophone: startMic,
     stopMicrophone: stopMic,
     attachAIVoice,

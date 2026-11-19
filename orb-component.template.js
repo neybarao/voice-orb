@@ -15,7 +15,7 @@
  *   await orb.useMicrophone();                       // user's voice -> drives Idle (call from a tap on iOS)
  *   orb.stopMicrophone();
  *   orb.attachAIVoice(audioElOrMediaStream);         // assistant's voice -> drives Speaking
- *   orb.playIntro();                                 // replay the opening (a few dots or glass beads -> voice waveform -> orb, ~4 s)
+ *   orb.playIntro();                                 // replay the opening (the orb spins up from small, ~2.4 s)
  *   <voice-orb intro="off"></voice-orb>              // the opening plays when the element first appears; this skips it
  *
  * ---- Size ----
@@ -41,7 +41,7 @@
   const MERIDIANS = 140, PER_LINE = 110, COUNT = MERIDIANS * PER_LINE;
   const RIBBONS = 3, RIB_ALONG = 320, RIB_ACROSS = 24, SH_U = 160, SH_V = 80;
   const MORPH_SECS = 1.4;
-  const INTRO_END = 4.1; // opening length in seconds
+  const INTRO_END = 2.4; // opening length in seconds
   const SPEECH = { syl: 4.2, phr: 0.3 };
   const BG = { dark: [0.027, 0.043, 0.078], light: [0.953, 0.961, 0.976] };
   const SILENT = { level: 0, bass: 0, mid: 0, high: 0 };
@@ -107,7 +107,7 @@
       if (name === 'size') this._resize();
     }
 
-    // Replay the opening: a few dots (Dots) or glass beads (Glass) open into a voice waveform, then become the orb.
+    // Replay the opening: the orb starts small and spins up to its full size.
     playIntro() { this._introT = this._reduceMotion ? INTRO_END : 0; }
 
     connectedCallback() {
@@ -180,7 +180,7 @@
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
       this.U = {};
-      ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => this.U[n] = gl.getUniformLocation(this.prog, n));
+      ['uTimeL','uTimeT','uRotL','uSpinT','uFlowT','uMorph','uLevel','uBass','uMid','uHigh','uPass','uDpr','uFit','uLight','uLoopP','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT','uHue'].forEach(n => this.U[n] = gl.getUniformLocation(this.prog, n));
 
       // Glass
       this.gprog = program(SH.gvs, SH.gfs);
@@ -206,7 +206,7 @@
       this.G_COUNT = gIdx.length;
       gl.bindVertexArray(this.vao);
       this.GU = {};
-      ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT'].forEach(n => this.GU[n] = gl.getUniformLocation(this.gprog, n));
+      ['uTimeL','uTimeT','uSpinL','uSpinT','uFlowL','uFlowT','uLevel','uBass','uHigh','uMorph','uFit','uLight','uBreak','uLoopP','uLoopFT','uSpeak','uSpeakE','uGray','uIntroOn','uIntroT','uHue'].forEach(n => this.GU[n] = gl.getUniformLocation(this.gprog, n));
       const sat = Number(DEFAULTS.sat);
       this.glassSat = Number.isFinite(sat) && sat > 0 ? Math.min(3, sat) : 1.45;
       gl.useProgram(this.gprog);
@@ -388,13 +388,17 @@
         this.live[key] = (1 - k) * u + k * a;
       }
       const L = this.live;
-      return { speak: k, speakE: e, gray: this._grayAmt, level: L.level, bass: L.bass, mid: L.mid, high: L.high };
+      // Who is talking, for the colour: the AI in Speaking pulls toward blue; the user's voice in Idle toward red.
+      this._userTalk = (this._userTalk || 0) + ((user ? Math.min(1, this._liveUser.level * 2.5) : 0) - (this._userTalk || 0)) * 0.08;
+      const hue = (1 - k) * this._userTalk - k;
+      return { speak: k, speakE: e, gray: this._grayAmt, hue, level: L.level, bass: L.bass, mid: L.mid, high: L.high };
     }
     _setSpeak(L, st) {
       const gl = this.gl;
       gl.uniform1f(L.uSpeak, st.speak || 0);
       gl.uniform1f(L.uSpeakE, st.speakE || 0);
       gl.uniform1f(L.uGray, st.gray || 0);
+      gl.uniform1f(L.uHue, st.hue || 0);
     }
 
     _frame(now) {
